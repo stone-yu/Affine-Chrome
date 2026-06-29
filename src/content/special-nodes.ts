@@ -68,12 +68,19 @@ export function findAndPrepare(
     console.log('img[src*=cdn]:', document.querySelectorAll('img[src*="/api/file/cdn/"]').length);
     console.log('[data-node-type=drawio]:', document.querySelectorAll('[data-node-type="drawio"]').length);
     console.log('Total matched special nodes:', found.length);
-    found.forEach(({ element, rule }, i) => {
-      console.log(`  [${i}] ${rule.kind} → <${element.tagName.toLowerCase()}>`
-        + ` class="${element.getAttribute('class') ?? ''}"`,
-        element
+
+    // Print ALL SVG attributes so we can see their actual viewBox / size
+    console.group('All SVG elements on page:');
+    document.querySelectorAll('svg').forEach((svg, i) => {
+      const r = svg.getBoundingClientRect();
+      console.log(
+        `  svg[${i}] viewBox="${svg.getAttribute('viewBox') ?? ''}"` +
+        ` w=${svg.getAttribute('width') ?? ''} h=${svg.getAttribute('height') ?? ''}` +
+        ` rendered=${r.width.toFixed(0)}×${r.height.toFixed(0)}` +
+        ` class="${(svg.getAttribute('class') ?? '').substring(0, 40)}"`
       );
     });
+    console.groupEnd();
     console.groupEnd();
   }
 
