@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "description": "Clip web pages and special diagrams into AFFiNE",
   "permissions": ["sidePanel", "activeTab", "scripting", "storage", "tabs"],
+  "host_permissions": ["<all_urls>"],
   "side_panel": { "default_path": "sidepanel.html" },
   "background": { "service_worker": "background.js" },
   "content_scripts": [{
