@@ -9,7 +9,20 @@ interface NodeRule {
 }
 
 const RULES: NodeRule[] = [
-  { match: 'km.sankuai.com', selector: '[data-node-type="drawio"], img[src*="/api/file/cdn/"]', kind: 'DrawIO', label: 'DrawIO 图表' },
+  // km.sankuai.com DrawIO: the CitadelMD :::drawio{src="..."} block renders as
+  // <img src="https://km.sankuai.com/api/file/cdn/...?contentType=0...">
+  // We also cover data-src lazy-loading variants.
+  {
+    match: 'km.sankuai.com',
+    selector: [
+      '[data-node-type="drawio"]',
+      'img[src*="/api/file/cdn/"]',
+      'img[data-src*="/api/file/cdn/"]',
+      'img[src*="contentType=0"]',
+    ].join(', '),
+    kind: 'DrawIO',
+    label: 'DrawIO 图表',
+  },
   { match: '*', selector: '.mermaid > svg, [class*="mermaid"] > svg', kind: 'Mermaid', label: 'Mermaid 图表' },
   { match: '*', selector: 'img[src*="plantuml"]', kind: 'PlantUML', label: 'PlantUML 图表' },
   { match: '*', selector: '.chart-container svg, .diagram-container svg, [class*="echarts"] svg', kind: 'Chart', label: '图表' },
@@ -73,6 +86,41 @@ async function waitForRender(el: Element, retries = 3): Promise<boolean> {
   return false;
 }
 
+/** Convert a Blob to a base-64 data URI. */
+function blobToDataUri(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
+ * Try to capture an <img> whose src points to an authenticated SVG (e.g. km.sankuai.com
+ * DrawIO diagrams). html2canvas can't handle these because:
+ *   1. The SVG contains <foreignObject>, which taints the canvas on drawing.
+ *   2. Re-fetching the URL without session cookies returns 401.
+ *
+ * Instead, we fetch the URL from within the content script (which inherits the page's
+ * cookies) and return a data URI of the SVG content directly.
+ */
+async function captureAuthSvgImg(el: Element): Promise<string | null> {
+  const img = el as HTMLImageElement;
+  // Support both src and data-src (lazy loading)
+  const src = img.src || img.dataset.src || img.getAttribute('data-src') || '';
+  if (!src || src.startsWith('data:')) return null;
+
+  try {
+    const res = await fetch(src, { credentials: 'include' });
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    return blobToDataUri(blob);
+  } catch {
+    return null;
+  }
+}
+
 export async function captureAll(jobs: CaptureJob[]): Promise<Map<string, string>> {
   const results = new Map<string, string>();
 
@@ -83,6 +131,18 @@ export async function captureAll(jobs: CaptureJob[]): Promise<Map<string, string
         console.warn(`[affine-clipper] Skipping ${job.id}: element has no height after retries`);
         continue;
       }
+
+      // DrawIO images on km.sankuai.com are SVGs served via authenticated CDN URLs.
+      // Fetch them directly instead of using html2canvas (which would taint the canvas).
+      if (job.info.kind === 'DrawIO' && job.element.tagName === 'IMG') {
+        const dataUri = await captureAuthSvgImg(job.element);
+        if (dataUri) {
+          results.set(job.id, dataUri);
+          continue;
+        }
+        // Fall through to html2canvas if fetch failed
+      }
+
       const canvas = await html2canvas(job.element as HTMLElement, {
         useCORS: true,
         scale: window.devicePixelRatio,

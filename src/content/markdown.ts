@@ -1,10 +1,14 @@
 import TurndownService from 'turndown';
+import { gfm } from 'turndown-plugin-gfm';
 
 const td = new TurndownService({
   headingStyle: 'atx',
   codeBlockStyle: 'fenced',
   bulletListMarker: '-',
 });
+
+// GFM plugin adds proper pipe-table support: | col | col |
+td.use(gfm);
 
 // Preserve affine-img:// URIs — TurndownService would otherwise encode them
 td.addRule('affine-img', {
