@@ -9,12 +9,14 @@ interface NodeRule {
 }
 
 const RULES: NodeRule[] = [
-  // km.sankuai.com DrawIO: the CitadelMD :::drawio{src="..."} block renders as
-  // <img src="https://km.sankuai.com/api/file/cdn/...?contentType=0...">
-  // We also cover data-src lazy-loading variants.
+  // km.sankuai.com DrawIO: Citadel renders :::drawio{src="..."}::: either as:
+  //   (a) <img src="https://km.sankuai.com/api/file/cdn/..."> — direct image tag
+  //   (b) an inline <svg content="<mxfile...>"> — the SVG is fetched and inlined
+  // The `content` attribute containing mxGraph XML is the fingerprint for (b).
   {
     match: 'km.sankuai.com',
     selector: [
+      'svg[content]',               // inline DrawIO SVG (most common in Citadel)
       '[data-node-type="drawio"]',
       'img[src*="/api/file/cdn/"]',
       'img[data-src*="/api/file/cdn/"]',
@@ -130,6 +132,20 @@ export async function captureAll(jobs: CaptureJob[]): Promise<Map<string, string
       if (!ready) {
         console.warn(`[affine-clipper] Skipping ${job.id}: element has no height after retries`);
         continue;
+      }
+
+      // Inline <svg> element (e.g. Citadel DrawIO rendered as inline SVG):
+      // Serialize the SVG DOM directly to a data URI. No fetch or canvas needed,
+      // and no foreignObject taint issue since we never touch a canvas.
+      if (job.element.tagName === 'svg' || job.element.tagName === 'SVG') {
+        try {
+          const svgText = new XMLSerializer().serializeToString(job.element);
+          const b64 = btoa(unescape(encodeURIComponent(svgText)));
+          results.set(job.id, `data:image/svg+xml;base64,${b64}`);
+          continue;
+        } catch (err) {
+          console.warn(`[affine-clipper] SVG serialize failed for ${job.id}:`, err);
+        }
       }
 
       // DrawIO images on km.sankuai.com are SVGs served via authenticated CDN URLs.
