@@ -43,13 +43,20 @@ export async function sendToAFFiNE(
   });
 
   try {
+    // Give AFFiNE's SPA time to initialize its window.addEventListener('message')
+    // handler after the page reaches 'complete' status. Without this delay, our
+    // postMessage can arrive before AFFiNE has registered its listener and is lost.
+    await new Promise(r => setTimeout(r, 1500));
+
     // Inject a script into the AFFiNE tab that:
     //   1. Sends the import postMessage (with a MessagePort so AFFiNE uses the
     //      port path rather than its window.postMessage fallback)
     //   2. Waits for the success reply
     //   3. Returns true/false to the caller
+    // world:'MAIN' avoids cross-isolated-world MessagePort transfer issues.
     const results = await chrome.scripting.executeScript({
       target: { tabId },
+      world: 'MAIN',
       func: (p: { title: string; contentMarkdown: string; workspace: string }) => {
         return new Promise<boolean>((resolve) => {
           const channel = new MessageChannel();
