@@ -10,12 +10,11 @@ chrome.runtime.onStartup.addListener(() => {
 
 // When the user clicks the extension icon, enable and open the panel only
 // for that specific tab — it won't appear on any other tab.
-chrome.action.onClicked.addListener(async (tab) => {
+// Both calls must stay synchronous: sidePanel.open() requires a user gesture
+// and loses that context after any await.
+chrome.action.onClicked.addListener((tab) => {
   if (!tab.id) return;
-  await chrome.sidePanel.setOptions({
-    tabId: tab.id,
-    enabled: true,
-    path: 'sidepanel.html',
-  }).catch(console.error);
+  chrome.sidePanel.setOptions({ tabId: tab.id, enabled: true, path: 'sidepanel.html' })
+    .catch(console.error);
   chrome.sidePanel.open({ tabId: tab.id }).catch(console.error);
 });
