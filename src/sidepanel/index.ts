@@ -77,10 +77,11 @@ function render() {
       ? `<div class="nodes">🖼 检测到 ${result.specialNodes.length} 个特殊节点<ul>${result.specialNodes.map((n) => `<li>${htmlEscape(n.label)}</li>`).join('')}</ul></div>`
       : '';
 
-  const isConfigured = !!workspace && !!affineUrl;
+  const isConfigured = !!affineUrl;
 
-  const workspaceHtml = workspace
-    ? `<div class="workspace-row"><span class="ws-label">保存到</span><span class="ws-value">${htmlEscape(workspace)}</span><a href="#" id="openSettings">更改</a></div>`
+  const wsDisplay = workspace || 'last-open-workspace';
+  const workspaceHtml = affineUrl
+    ? `<div class="workspace-row"><span class="ws-label">保存到</span><span class="ws-value">${htmlEscape(wsDisplay)}</span><a href="#" id="openSettings">更改</a></div>`
     : `<div class="no-config">未配置 AFFiNE 地址，请先 <a href="#" id="openSettings">打开设置</a></div>`;
 
   app.innerHTML = `
@@ -112,7 +113,8 @@ function render() {
       await sendToAFFiNE(document.body, affineUrl, {
         title: editedTitle,
         contentMarkdown: result.markdown,
-        workspace,
+        // Fall back to AFFiNE's "last-open-workspace" strategy when no ID is configured
+        workspace: workspace || 'last-open-workspace',
       });
       state = { kind: 'success' };
     } catch (err) {

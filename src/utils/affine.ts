@@ -25,8 +25,16 @@ export function sendToAFFiNE(
 
     const timer = setTimeout(() => {
       cleanup();
-      reject(new Error('timeout'));
+      reject(new Error(
+        'timeout — 请确认：① 已在浏览器中登录 AFFiNE；② AFFiNE 地址正确；③ 自托管版本支持 Clipper 功能（需较新版本）'
+      ));
     }, TIMEOUT_MS);
+
+    // Detect network-level load failure (wrong URL, server down, etc.)
+    iframe.addEventListener('error', () => {
+      cleanup();
+      reject(new Error('无法加载 AFFiNE 页面，请检查 AFFiNE 地址是否正确且服务正在运行'));
+    });
 
     function cleanup() {
       clearTimeout(timer);
