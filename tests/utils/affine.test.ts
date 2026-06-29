@@ -1,18 +1,37 @@
 // Mock Chrome extension APIs before importing the module
+const mockQuery = jest.fn();
 const mockCreate = jest.fn();
 const mockOnUpdated = { addListener: jest.fn(), removeListener: jest.fn() };
 const mockExecuteScript = jest.fn();
 const mockRemove = jest.fn();
+const mockUpdate = jest.fn();
 
 (globalThis as any).chrome = {
-  tabs: { create: mockCreate, onUpdated: mockOnUpdated, remove: mockRemove },
+  tabs: {
+    query: mockQuery,
+    create: mockCreate,
+    onUpdated: mockOnUpdated,
+    remove: mockRemove,
+    update: mockUpdate,
+  },
   scripting: { executeScript: mockExecuteScript },
 };
 
 import { sendToAFFiNE } from '../../src/utils/affine';
 
 describe('sendToAFFiNE', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockQuery.mockResolvedValue([{ id: 1 }]); // original tab
+    mockRemove.mockResolvedValue(undefined);
+    mockUpdate.mockResolvedValue(undefined);
+  });
+
+  function simulateTabLoad(tabId: number) {
+    mockOnUpdated.addListener.mockImplementationOnce((fn: Function) => {
+      setTimeout(() => fn(tabId, { status: 'complete' }), 10);
+    });
+  }
 
   it('rejects immediately when affineUrl is empty', async () => {
     await expect(
@@ -21,14 +40,10 @@ describe('sendToAFFiNE', () => {
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
-  it('resolves when AFFiNE import succeeds', async () => {
-    mockCreate.mockResolvedValue({ id: 123 });
-    mockRemove.mockResolvedValue(undefined);
+  it('resolves and restores original tab on success', async () => {
+    mockCreate.mockResolvedValue({ id: 42 });
     mockExecuteScript.mockResolvedValue([{ result: true }]);
-    // Simulate tab reaching 'complete' status
-    mockOnUpdated.addListener.mockImplementationOnce((fn: Function) => {
-      setTimeout(() => fn(123, { status: 'complete' }), 10);
-    });
+    simulateTabLoad(42);
 
     await expect(
       sendToAFFiNE('http://localhost:3000', { title: 'T', contentMarkdown: 'M', workspace: 'W' })
@@ -36,25 +51,22 @@ describe('sendToAFFiNE', () => {
 
     expect(mockCreate).toHaveBeenCalledWith({
       url: 'http://localhost:3000/clipper/import',
-      active: false,
+      active: true,
     });
-    expect(mockRemove).toHaveBeenCalledWith(123);
+    expect(mockRemove).toHaveBeenCalledWith(42);
+    expect(mockUpdate).toHaveBeenCalledWith(1, { active: true }); // restore original
   });
 
-  it('rejects with timeout message when import returns false', async () => {
-    mockCreate.mockResolvedValue({ id: 456 });
-    mockRemove.mockResolvedValue(undefined);
+  it('rejects with timeout message and closes tab on failure', async () => {
+    mockCreate.mockResolvedValue({ id: 99 });
     mockExecuteScript.mockResolvedValue([{ result: false }]);
-    mockOnUpdated.addListener.mockImplementationOnce((fn: Function) => {
-      setTimeout(() => fn(456, { status: 'complete' }), 10);
-    });
+    simulateTabLoad(99);
 
     await expect(
       sendToAFFiNE('http://localhost:3000', { title: 'T', contentMarkdown: 'M', workspace: 'W' })
-    ).rejects.toThrow('timeout');
+    ).rejects.toThrow('导入超时');
 
-    // Tab must be closed even on failure
-    expect(mockRemove).toHaveBeenCalledWith(456);
+    expect(mockRemove).toHaveBeenCalledWith(99);
+    expect(mockUpdate).toHaveBeenCalledWith(1, { active: true });
   });
-
 });

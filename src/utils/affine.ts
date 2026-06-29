@@ -5,7 +5,6 @@ export interface AFFiNEPayload {
 }
 
 const LOAD_TIMEOUT_MS = 15_000;
-const IMPORT_TIMEOUT_MS = 30_000;
 
 export async function sendToAFFiNE(
   affineUrl: string,
@@ -13,18 +12,29 @@ export async function sendToAFFiNE(
 ): Promise<void> {
   if (!affineUrl) throw new Error('AFFiNE URL not configured');
 
-  // Open AFFiNE in a background tab rather than a hidden iframe.
-  // Iframes inside extension pages inherit the extension's strict MV3 CSP
-  // (script-src 'self' …), which blocks any external JS the AFFiNE page loads.
-  // A separate browser tab runs under the remote server's own CSP instead.
+  // Remember the current active tab so we can restore focus after the import.
+  const [originalTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+  // Open AFFiNE in a FOREGROUND tab (active: true).
+  // Background tabs (active: false) are throttled by Chrome — JS timers fire at
+  // 1 Hz and React initialization can be suspended entirely, so AFFiNE's
+  // window.addEventListener handler never runs and our postMessage is lost.
+  // A foreground tab runs at full speed. We close it automatically after import.
   const tab = await chrome.tabs.create({
     url: `${affineUrl}/clipper/import`,
-    active: false,
+    active: true,
   });
   const tabId = tab.id!;
-  const closeTab = () => chrome.tabs.remove(tabId).catch(() => {});
 
-  // Wait for the page to finish loading before injecting our script.
+  const closeTab = async () => {
+    await chrome.tabs.remove(tabId).catch(() => {});
+    // Restore the original tab so the user sees their article again.
+    if (originalTab?.id) {
+      await chrome.tabs.update(originalTab.id, { active: true }).catch(() => {});
+    }
+  };
+
+  // Wait for the page to finish loading.
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
       chrome.tabs.onUpdated.removeListener(listener);
@@ -43,17 +53,9 @@ export async function sendToAFFiNE(
   });
 
   try {
-    // Give AFFiNE's SPA time to initialize its window.addEventListener('message')
-    // handler after the page reaches 'complete' status. Without this delay, our
-    // postMessage can arrive before AFFiNE has registered its listener and is lost.
-    await new Promise(r => setTimeout(r, 1500));
-
-    // Inject a script into the AFFiNE tab that:
-    //   1. Sends the import postMessage (with a MessagePort so AFFiNE uses the
-    //      port path rather than its window.postMessage fallback)
-    //   2. Waits for the success reply
-    //   3. Returns true/false to the caller
-    // world:'MAIN' avoids cross-isolated-world MessagePort transfer issues.
+    // Inject a script into the AFFiNE tab that sends the import message and
+    // awaits the success reply. world:'MAIN' runs in the page's own JS context,
+    // avoiding any isolated-world / MessagePort transfer complications.
     const results = await chrome.scripting.executeScript({
       target: { tabId },
       world: 'MAIN',
@@ -81,7 +83,6 @@ export async function sendToAFFiNE(
             [channel.port2]
           );
 
-          // Inner timeout slightly shorter than the outer so we can report cleanly
           setTimeout(() => {
             window.removeEventListener('message', onMsg);
             resolve(false);
@@ -93,10 +94,10 @@ export async function sendToAFFiNE(
 
     if (!results?.[0]?.result) {
       throw new Error(
-        'timeout — 请确认：① 已在浏览器中登录 AFFiNE；② AFFiNE 地址正确；③ 自托管版本支持 Clipper 功能（需较新版本）'
+        '导入超时 — 请在刚打开的 AFFiNE 页面中确认是否已登录并选择了工作区'
       );
     }
   } finally {
-    closeTab();
+    await closeTab();
   }
 }
