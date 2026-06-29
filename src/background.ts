@@ -1,15 +1,25 @@
-// sidePanel.open({ tabId }) is tab-specific: the panel is visible only while
-// that tab is active and hides automatically when the user switches tabs.
-// openPanelOnActionClick: false prevents Chrome from opening it globally
-// (for the whole window) when the icon is clicked.
-chrome.sidePanel
-  .setPanelBehavior({ openPanelOnActionClick: false })
-  .catch(console.error);
+// Globally disable the side panel so it doesn't appear on every tab by default.
+// The manifest's default_path would otherwise enable it globally.
+chrome.sidePanel.setOptions({ enabled: false }).catch(console.error);
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(console.error);
 
-// sidePanel.open() must be called synchronously inside a user-gesture handler —
-// any await before it breaks that requirement.
+// Re-apply on browser start (service worker may restart and lose state).
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.sidePanel.setOptions({ enabled: false }).catch(console.error);
+});
+chrome.runtime.onStartup.addListener(() => {
+  chrome.sidePanel.setOptions({ enabled: false }).catch(console.error);
+});
+
+// On click: enable + open for this tab only.
+// IMPORTANT: no async/await here — sidePanel.open() must be called
+// synchronously within the user-gesture handler or Chrome rejects it.
+// Both IPC calls are fire-and-forget; Chrome processes them in order,
+// so setOptions({enabled:true}) is applied before open() takes effect.
 chrome.action.onClicked.addListener((tab) => {
-  if (tab.id) {
-    chrome.sidePanel.open({ tabId: tab.id }).catch(console.error);
-  }
+  if (!tab.id) return;
+  chrome.sidePanel
+    .setOptions({ tabId: tab.id, enabled: true, path: 'sidepanel.html' })
+    .catch(console.error);
+  chrome.sidePanel.open({ tabId: tab.id }).catch(console.error);
 });
