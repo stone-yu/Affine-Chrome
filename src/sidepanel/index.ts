@@ -122,6 +122,18 @@ function render() {
   });
 }
 
+async function sendExtractMessage(tabId: number): Promise<ExtractResult | ExtractError> {
+  try {
+    return await chrome.tabs.sendMessage(tabId, { type: 'EXTRACT' });
+  } catch (err) {
+    // Tab was open before extension was installed — content script not yet injected.
+    // Inject it programmatically and retry once.
+    if (!String(err).includes('Could not establish connection')) throw err;
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+    return chrome.tabs.sendMessage(tabId, { type: 'EXTRACT' });
+  }
+}
+
 async function startExtraction() {
   state = { kind: 'extracting' };
   render();
@@ -130,7 +142,7 @@ async function startExtraction() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.id) throw new Error('无法获取当前标签页');
 
-    const response: ExtractResult | ExtractError = await chrome.tabs.sendMessage(tab.id, { type: 'EXTRACT' });
+    const response = await sendExtractMessage(tab.id);
 
     if (response.type === 'EXTRACT_ERROR') {
       state = { kind: 'error', message: response.message };
