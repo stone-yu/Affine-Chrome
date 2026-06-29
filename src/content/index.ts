@@ -45,7 +45,12 @@ async function captureDrawioDirectly(hostname: string): Promise<string[]> {
   for (const src of uniqueUrls) {
     console.log(`[AFFiNE Clipper]   fetching ${src.substring(0, 80)}...`);
     try {
-      const res = await fetch(src, { credentials: 'include' });
+      // 'same-origin': sends cookies on the initial km.sankuai.com request
+      // (needed for auth), but NOT on the cross-origin redirect to it.meituan.net
+      // (which uses a pre-signed URL — no cookies required there).
+      // 'include' would cause CORS failure on the redirect because
+      // it.meituan.net responds with ACAO:* which is incompatible with credentials.
+      const res = await fetch(src, { credentials: 'same-origin' });
       console.log(`[AFFiNE Clipper]   -> status=${res.status}`);
       if (!res.ok) continue;
       const blob = await res.blob();
