@@ -136,14 +136,26 @@ async function captureAuthSvgImg(el: Element): Promise<string | null> {
   const img = el as HTMLImageElement;
   // Support both src and data-src (lazy loading)
   const src = img.src || img.dataset.src || img.getAttribute('data-src') || '';
-  if (!src || src.startsWith('data:')) return null;
+  console.log(`[affine-clipper] captureAuthSvgImg src="${src.substring(0, 80)}"`);
+  if (!src || src.startsWith('data:')) {
+    console.warn('[affine-clipper] captureAuthSvgImg: no valid src');
+    return null;
+  }
 
   try {
     const res = await fetch(src, { credentials: 'include' });
-    if (!res.ok) return null;
+    console.log(`[affine-clipper] fetch status=${res.status} type=${res.headers.get('content-type')}`);
+    if (!res.ok) {
+      console.warn(`[affine-clipper] fetch failed: ${res.status}`);
+      return null;
+    }
     const blob = await res.blob();
-    return blobToDataUri(blob);
-  } catch {
+    console.log(`[affine-clipper] blob size=${blob.size} type=${blob.type}`);
+    const uri = await blobToDataUri(blob);
+    console.log(`[affine-clipper] dataUri length=${uri.length}`);
+    return uri;
+  } catch (err) {
+    console.warn('[affine-clipper] captureAuthSvgImg fetch error:', err);
     return null;
   }
 }

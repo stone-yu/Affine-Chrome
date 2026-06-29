@@ -1,5 +1,5 @@
 import TurndownService from 'turndown';
-import { gfm } from 'turndown-plugin-gfm';
+import { strikethrough, taskListItems } from 'turndown-plugin-gfm';
 
 const td = new TurndownService({
   headingStyle: 'atx',
@@ -7,13 +7,16 @@ const td = new TurndownService({
   bulletListMarker: '-',
 });
 
-// GFM plugin adds strikethrough, task lists, and basic table support.
-td.use(gfm);
+// Use only the non-table parts of GFM.
+// The GFM `tables` plugin calls `turndownService.keep(...)` for tables that
+// lack <th> headers, and `keep` rules have HIGHER priority than `addRule` rules,
+// so our custom table rule would never fire for those tables.
+// By omitting the tables plugin entirely we avoid that conflict.
+td.use(strikethrough);
+td.use(taskListItems);
 
-// The GFM tables rule only converts tables that have <th> heading cells;
-// tables with only <td> rows get "kept" as raw HTML by the plugin.
-// This override converts ALL tables to pipe format, treating the first row
-// as the header regardless of whether it uses <th> or <td>.
+// Convert ALL tables to pipe format: expand merged cells (colspan) with empty
+// placeholders, treat the first row as the header regardless of <th>/<td>.
 td.addRule('all-tables', {
   filter: ['table'],
   replacement: (_content, node) => {
