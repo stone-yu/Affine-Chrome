@@ -2,6 +2,11 @@ import { getSettings } from '../utils/storage';
 import { sendToAFFiNE } from '../utils/affine';
 import type { ExtractResult, ExtractError } from '../types';
 
+function htmlEscape(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 const STYLES = `
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: system-ui, sans-serif; font-size: 14px; color: #333; background: #fafafa; min-height: 100vh; }
@@ -60,7 +65,7 @@ function render() {
   }
 
   if (state.kind === 'error') {
-    app.innerHTML = `<style>${STYLES}</style><div class="panel result"><div class="icon">✗</div><p class="error-msg">${state.message}</p><button class="save" id="retry">重试</button></div>`;
+    app.innerHTML = `<style>${STYLES}</style><div class="panel result"><div class="icon">✗</div><p class="error-msg">${htmlEscape(state.message)}</p><button class="save" id="retry">重试</button></div>`;
     document.getElementById('retry')?.addEventListener('click', startExtraction);
     return;
   }
@@ -69,11 +74,13 @@ function render() {
   const { result, title } = state;
   const nodeHtml =
     result.specialNodes.length > 0
-      ? `<div class="nodes">🖼 检测到 ${result.specialNodes.length} 个特殊节点<ul>${result.specialNodes.map((n) => `<li>${n.label}</li>`).join('')}</ul></div>`
+      ? `<div class="nodes">🖼 检测到 ${result.specialNodes.length} 个特殊节点<ul>${result.specialNodes.map((n) => `<li>${htmlEscape(n.label)}</li>`).join('')}</ul></div>`
       : '';
 
+  const isConfigured = !!workspace && !!affineUrl;
+
   const workspaceHtml = workspace
-    ? `<div class="workspace-row"><span class="ws-label">保存到</span><span class="ws-value">${workspace}</span><a href="#" id="openSettings">更改</a></div>`
+    ? `<div class="workspace-row"><span class="ws-label">保存到</span><span class="ws-value">${htmlEscape(workspace)}</span><a href="#" id="openSettings">更改</a></div>`
     : `<div class="no-config">未配置 AFFiNE 地址，请先 <a href="#" id="openSettings">打开设置</a></div>`;
 
   app.innerHTML = `
@@ -81,13 +88,13 @@ function render() {
     <div class="panel">
       <h2>AFFiNE Web Clipper</h2>
       <label for="titleInput">标题</label>
-      <input type="text" id="titleInput" value="${title.replace(/"/g, '&quot;')}" />
+      <input type="text" id="titleInput" value="${htmlEscape(title)}" />
       <div class="meta">
         <span>📄 ${result.wordCount} 字</span>
       </div>
       ${nodeHtml}
       ${workspaceHtml}
-      ${workspace ? `<button class="save" id="saveBtn">保存到 AFFiNE</button>` : ''}
+      ${isConfigured ? `<button class="save" id="saveBtn">保存到 AFFiNE</button>` : ''}
       <div class="error-msg" id="errMsg"></div>
     </div>
   `;

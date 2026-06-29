@@ -1,5 +1,10 @@
 import { getSettings, saveSettings } from '../utils/storage';
 
+function htmlEscape(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 const STYLES = `
   * { box-sizing: border-box; }
   body { font-family: system-ui, sans-serif; max-width: 480px; margin: 40px auto; padding: 0 16px; color: #333; }
@@ -19,9 +24,9 @@ async function init() {
     <style>${STYLES}</style>
     <h1>AFFiNE Web Clipper — Settings</h1>
     <label for="affineUrl">AFFiNE Server URL</label>
-    <input id="affineUrl" type="url" placeholder="http://localhost:3000" value="${settings.affineUrl}" />
+    <input id="affineUrl" type="url" placeholder="http://localhost:3000" value="${htmlEscape(settings.affineUrl)}" />
     <label for="workspace">Default Workspace ID</label>
-    <input id="workspace" type="text" placeholder="Paste workspace ID from AFFiNE URL" value="${settings.defaultWorkspace}" />
+    <input id="workspace" type="text" placeholder="Paste workspace ID from AFFiNE URL" value="${htmlEscape(settings.defaultWorkspace)}" />
     <button id="save">Save</button>
     <span class="saved" id="savedMsg">✓ Saved</span>
   `;

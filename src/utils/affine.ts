@@ -24,6 +24,7 @@ export function sendToAFFiNE(
     }, TIMEOUT_MS);
 
     function onMessage(event: MessageEvent) {
+      if (new URL(affineUrl).origin !== event.origin) return;
       if (event.data?.type === 'affine-clipper:import:success') {
         cleanup();
         resolve();

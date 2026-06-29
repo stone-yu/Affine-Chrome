@@ -1,3 +1,4 @@
+import html2canvas from 'html2canvas';
 import type { CaptureJob, SpecialNodeInfo } from '../types';
 
 interface NodeRule {
@@ -74,8 +75,6 @@ async function waitForRender(el: Element, retries = 3): Promise<boolean> {
 
 export async function captureAll(jobs: CaptureJob[]): Promise<Map<string, string>> {
   const results = new Map<string, string>();
-  // Dynamically import html2canvas to keep it out of the test environment
-  const html2canvas = (await import('html2canvas')).default;
 
   for (const job of jobs) {
     try {

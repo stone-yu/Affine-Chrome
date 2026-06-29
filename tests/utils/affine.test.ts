@@ -24,6 +24,7 @@ describe('sendToAFFiNE', () => {
           setTimeout(() => {
             window.dispatchEvent(new MessageEvent('message', {
               data: { type: 'affine-clipper:import:success' },
+              origin: 'http://localhost:3000',
             }));
           }, 10);
         }, 10);
