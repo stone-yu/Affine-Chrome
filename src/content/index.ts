@@ -14,7 +14,35 @@ async function performExtraction(): Promise<ExtractResult | ExtractError> {
 
     const markdown = toMarkdown(article.content);
     const images = await captureAll(jobs);
-    const finalMarkdown = substituteImages(markdown, images);
+
+    // Diagnostic: check how many placeholders survived Readability extraction
+    const survived = jobs.filter(j => markdown.includes(`affine-img://${j.id}`));
+    const missed   = jobs.filter(j => !markdown.includes(`affine-img://${j.id}`));
+    if (jobs.length > 0) {
+      console.log(
+        `[AFFiNE Clipper] special nodes: ${jobs.length} detected, ` +
+        `${survived.length} survived Readability, ${missed.length} filtered out, ` +
+        `${images.size} captured`
+      );
+    }
+
+    let finalMarkdown = substituteImages(markdown, images);
+
+    // Readability strips <img src="affine-img://..."> placeholders because the
+    // scheme is non-standard.  Append any filtered-out diagrams at the end so
+    // they always reach AFFiNE regardless of Readability's decisions.
+    if (missed.length > 0) {
+      const appended: string[] = [];
+      for (const job of missed) {
+        const dataUri = images.get(job.id);
+        if (dataUri) {
+          appended.push(`![${job.info.label}](${dataUri})`);
+        }
+      }
+      if (appended.length > 0) {
+        finalMarkdown += '\n\n---\n\n' + appended.join('\n\n');
+      }
+    }
 
     return {
       type: 'EXTRACT_RESULT',
