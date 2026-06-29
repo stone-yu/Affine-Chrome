@@ -83,10 +83,12 @@ export async function sendToAFFiNE(
             [channel.port2]
           );
 
+          // 3-minute timeout — large DrawIO SVGs can take a long time for
+          // AFFiNE to hash and write as blobs.
           setTimeout(() => {
             window.removeEventListener('message', onMsg);
             resolve(false);
-          }, 28_000);
+          }, 180_000);
         });
       },
       args: [payload],
@@ -94,7 +96,7 @@ export async function sendToAFFiNE(
 
     if (!results?.[0]?.result) {
       throw new Error(
-        '导入超时 — 请在刚打开的 AFFiNE 页面中确认是否已登录并选择了工作区'
+        '导入超时（3 分钟）— 请确认已登录 AFFiNE 并选择了工作区。图片较多时请稍等更长时间。'
       );
     }
   } finally {

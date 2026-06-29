@@ -91,8 +91,13 @@ async function captureDrawioDirectly(hostname: string): Promise<DrawioCapture[]>
       console.log(`[AFFiNE Clipper]   status=${res.status} for ${url.substring(0, 60)}`);
       if (!res.ok) continue;
       const blob = await res.blob();
-      results.push({ dataUri: await blobToDataUri(blob), marker });
-      console.log(`[AFFiNE Clipper]   captured ${blob.size}B, marker="${marker}"`);
+      const svgText = await blob.text();
+      // Strip the `content` attribute (mxGraph XML metadata, ~34KB/SVG) — not
+      // needed for rendering and significantly reduces the payload sent to AFFiNE.
+      const stripped = svgText.replace(/\s+content="[^"]*"/g, '');
+      const strippedBlob = new Blob([stripped], { type: 'image/svg+xml' });
+      results.push({ dataUri: await blobToDataUri(strippedBlob), marker });
+      console.log(`[AFFiNE Clipper]   captured ${blob.size}B -> ${strippedBlob.size}B (stripped), marker="${marker}"`);
     } catch (err) {
       console.warn('[AFFiNE Clipper]   fetch error:', err);
     }
