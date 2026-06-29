@@ -81,6 +81,34 @@ export function findAndPrepare(
       );
     });
     console.groupEnd();
+
+    // Check for iframes (DrawIO might be inside one)
+    const iframes = document.querySelectorAll('iframe');
+    console.log('iframes on page:', iframes.length);
+    iframes.forEach((f, i) =>
+      console.log(`  iframe[${i}] src="${(f.src ?? '').substring(0, 80)}" w=${f.offsetWidth} h=${f.offsetHeight}`)
+    );
+
+    // Check for canvas (DrawIO might render via canvas)
+    const canvases = document.querySelectorAll('canvas');
+    console.log('canvas elements:', canvases.length);
+    canvases.forEach((c, i) => {
+      const r = c.getBoundingClientRect();
+      console.log(`  canvas[${i}] w=${c.width} h=${c.height} rendered=${r.width.toFixed(0)}×${r.height.toFixed(0)}`);
+    });
+
+    // Show ALL large elements (rendered > 300×100) — DrawIO should be among them
+    console.group('Large elements (rendered w>300 h>100):');
+    document.querySelectorAll('*').forEach((el) => {
+      const r = el.getBoundingClientRect();
+      if (r.width > 300 && r.height > 100) {
+        const tag = el.tagName.toLowerCase();
+        if (!['div', 'section', 'article', 'main', 'body', 'html', 'header', 'footer', 'nav', 'aside', 'ul', 'li', 'p', 'span', 'a', 'table', 'tbody', 'tr', 'td', 'th'].includes(tag)) {
+          console.log(`  <${tag}> ${r.width.toFixed(0)}×${r.height.toFixed(0)} class="${(el.getAttribute('class') ?? '').substring(0, 50)}"`);
+        }
+      }
+    });
+    console.groupEnd();
     console.groupEnd();
   }
 
