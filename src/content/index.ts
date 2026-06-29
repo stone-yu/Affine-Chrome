@@ -13,55 +13,131 @@ function blobToDataUri(blob: Blob): Promise<string> {
   });
 }
 
+interface DrawioCapture {
+  dataUri: string;
+  /** Preceding text (up to 80 chars) from a sibling/parent element.
+   *  Used to insert the image after that text in the Markdown. null = append at end. */
+  marker: string | null;
+}
+
 /**
- * Extract DrawIO CDN URLs from the raw page HTML, then fetch each one.
+ * Capture DrawIO diagrams on km.sankuai.com.
  *
- * km.sankuai.com uses virtual scrolling, so DrawIO elements are only mounted
- * in the DOM while visible.  The src URLs are however always present in the
- * page's raw HTML (serialised as React props / data attributes).  We scan
- * document.documentElement.innerHTML with a regex and fetch each unique URL
- * with the user's session cookies.
+ * km.sankuai.com uses virtual scrolling: SVG elements only exist in the DOM
+ * while visible.  We use two strategies to find the CDN URLs:
+ *
+ *  A. Scan ALL element attributes — even with virtual scrolling the React
+ *     placeholder containers (which hold the src URL as a data prop) remain in
+ *     the DOM.  When found this way we can also extract a "marker" (text of the
+ *     nearest preceding sibling) to insert the image at the right position.
+ *
+ *  B. Regex-scan the raw innerHTML — catches URLs that only live inside
+ *     serialised JSON blobs / script tags (no position info).
  */
-async function captureDrawioDirectly(hostname: string): Promise<string[]> {
+async function captureDrawioDirectly(hostname: string): Promise<DrawioCapture[]> {
   if (!hostname.includes('km.sankuai.com')) return [];
 
-  // Scan the raw HTML for CDN URLs that carry DrawIO content
-  const html = document.documentElement.innerHTML;
-  const rawMatches = html.match(
-    /https?:\/\/km\.sankuai\.com\/api\/file\/cdn\/[^"' <>\s\\]+contentType=0[^"' <>\s\\]*/g
-  ) ?? [];
-
-  // Unescape HTML entities (&amp; -> &, &#x2F; -> /, etc.)
   const unescapeHtml = (s: string) =>
     s.replace(/&amp;/g, '&').replace(/&#x2F;/g, '/').replace(/&#47;/g, '/');
 
-  const uniqueUrls = [...new Set(rawMatches.map(unescapeHtml))];
-  console.log(`[AFFiNE Clipper] DrawIO URLs found in page HTML: ${uniqueUrls.length}`);
-  uniqueUrls.forEach((u, i) => console.log(`  [${i}] ${u.substring(0, 100)}`));
+  // ── Strategy A: DOM attribute scan ───────────────────────────────────────
+  const domRefs: { url: string; marker: string | null }[] = [];
+  const seenA = new Set<string>();
+  document.querySelectorAll('*').forEach((el) => {
+    for (const attr of Array.from(el.attributes)) {
+      if (attr.value.includes('/api/file/cdn/') && attr.value.includes('contentType=0')) {
+        const url = unescapeHtml(attr.value.split(/["' <>\\]/)[0]);
+        if (seenA.has(url)) break;
+        seenA.add(url);
 
-  if (uniqueUrls.length === 0) return [];
+        // Walk up the DOM to find the nearest preceding sibling text (position marker)
+        let marker: string | null = null;
+        let node: Element | null = el;
+        for (let depth = 0; depth < 8 && node && !marker; depth++, node = node.parentElement) {
+          let prev = node.previousElementSibling;
+          while (prev) {
+            const txt = (prev.textContent ?? '').trim().replace(/\s+/g, ' ');
+            if (txt.length > 4) { marker = txt.substring(0, 80); break; }
+            prev = prev.previousElementSibling;
+          }
+        }
+        domRefs.push({ url, marker });
+        break;
+      }
+    }
+  });
+  console.log(`[AFFiNE Clipper] DrawIO from DOM attrs: ${domRefs.length}`);
+  domRefs.forEach((r, i) => console.log(`  [${i}] marker="${r.marker}" url=${r.url.substring(0, 80)}`));
 
-  const results: string[] = [];
-  for (const src of uniqueUrls) {
-    console.log(`[AFFiNE Clipper]   fetching ${src.substring(0, 80)}...`);
+  // ── Strategy B: raw HTML scan (fallback) ─────────────────────────────────
+  const rawMatches = (document.documentElement.innerHTML.match(
+    /https?:\/\/km\.sankuai\.com\/api\/file\/cdn\/[^"' <>\s\\]+contentType=0[^"' <>\s\\]*/g
+  ) ?? []).map(unescapeHtml);
+  const uniqueFromHtml = [...new Set(rawMatches)].filter(u => !seenA.has(u));
+  console.log(`[AFFiNE Clipper] DrawIO from HTML scan: ${uniqueFromHtml.length} extra`);
+
+  // Merge: DOM refs first (have position info), then HTML-only extras
+  const allRefs = [
+    ...domRefs,
+    ...uniqueFromHtml.map(url => ({ url, marker: null })),
+  ];
+  if (allRefs.length === 0) return [];
+
+  // ── Fetch each SVG ────────────────────────────────────────────────────────
+  const results: DrawioCapture[] = [];
+  for (const { url, marker } of allRefs) {
     try {
-      // 'same-origin': sends cookies on the initial km.sankuai.com request
-      // (needed for auth), but NOT on the cross-origin redirect to it.meituan.net
-      // (which uses a pre-signed URL — no cookies required there).
-      // 'include' would cause CORS failure on the redirect because
-      // it.meituan.net responds with ACAO:* which is incompatible with credentials.
-      const res = await fetch(src, { credentials: 'same-origin' });
-      console.log(`[AFFiNE Clipper]   -> status=${res.status}`);
+      const res = await fetch(url, { credentials: 'same-origin' });
+      console.log(`[AFFiNE Clipper]   status=${res.status} for ${url.substring(0, 60)}`);
       if (!res.ok) continue;
       const blob = await res.blob();
-      results.push(await blobToDataUri(blob));
-      console.log(`[AFFiNE Clipper]   captured ${blob.size}B`);
+      results.push({ dataUri: await blobToDataUri(blob), marker });
+      console.log(`[AFFiNE Clipper]   captured ${blob.size}B, marker="${marker}"`);
     } catch (err) {
       console.warn('[AFFiNE Clipper]   fetch error:', err);
     }
   }
-  console.log(`[AFFiNE Clipper] DrawIO: ${results.length}/${uniqueUrls.length} captured`);
+  console.log(`[AFFiNE Clipper] DrawIO: ${results.length}/${allRefs.length} captured`);
   return results;
+}
+
+/**
+ * Insert DrawIO images at approximately the right positions in the Markdown.
+ * If a capture has a marker, we search for that text and append the image
+ * immediately after the paragraph that contains it.
+ * Images without a marker (or whose marker wasn't found) are appended at the end.
+ */
+function insertDrawioImages(markdown: string, captures: DrawioCapture[]): string {
+  let result = markdown;
+  const unpositioned: string[] = [];
+
+  for (let i = 0; i < captures.length; i++) {
+    const { dataUri, marker } = captures[i];
+    const imgMd = `![DrawIO 图表 ${i + 1}](${dataUri})`;
+    let inserted = false;
+
+    if (marker) {
+      // Find the marker text (case-insensitive, first 40 chars for robustness)
+      const key = marker.substring(0, 40).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(key, 'i');
+      const match = re.exec(result);
+      if (match) {
+        // Find the end of the paragraph/line containing the match
+        const lineEnd = result.indexOf('\n\n', match.index);
+        const insertAt = lineEnd === -1 ? result.length : lineEnd;
+        result = result.slice(0, insertAt) + '\n\n' + imgMd + result.slice(insertAt);
+        inserted = true;
+      }
+    }
+
+    if (!inserted) unpositioned.push(imgMd);
+  }
+
+  if (unpositioned.length > 0) {
+    result += '\n\n---\n\n' + unpositioned.join('\n\n');
+  }
+
+  return result;
 }
 
 async function performExtraction(): Promise<ExtractResult | ExtractError> {
@@ -79,12 +155,10 @@ async function performExtraction(): Promise<ExtractResult | ExtractError> {
     const images = await captureAll(jobs);
     let finalMarkdown = substituteImages(markdown, images);
 
-    // DrawIO on km.sankuai.com: fetch directly from page HTML, independent of Readability
-    const drawioUris = await captureDrawioDirectly(hostname);
-    if (drawioUris.length > 0) {
-      finalMarkdown +=
-        '\n\n---\n\n' +
-        drawioUris.map((uri, i) => `![DrawIO 图表 ${i + 1}](${uri})`).join('\n\n');
+    // DrawIO on km.sankuai.com: fetch from page (independent of Readability)
+    const drawioCaptures = await captureDrawioDirectly(hostname);
+    if (drawioCaptures.length > 0) {
+      finalMarkdown = insertDrawioImages(finalMarkdown, drawioCaptures);
     }
 
     return {
@@ -94,7 +168,7 @@ async function performExtraction(): Promise<ExtractResult | ExtractError> {
       wordCount: article.wordCount,
       specialNodes: [
         ...jobs.map((j) => j.info),
-        ...drawioUris.map((_, i) => ({ label: `DrawIO 图表 ${i + 1}`, kind: 'DrawIO' })),
+        ...drawioCaptures.map((_, i) => ({ label: `DrawIO 图表 ${i + 1}`, kind: 'DrawIO' })),
       ],
     };
   } catch (err) {

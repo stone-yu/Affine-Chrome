@@ -24,29 +24,48 @@ td.addRule('all-tables', {
     const rows = Array.from(table.rows);
     if (rows.length === 0) return '';
 
-    // Expand a row into flat cell strings, filling empty strings for merged columns.
-    const expandRow = (row: HTMLTableRowElement): string[] => {
-      const cells: string[] = [];
-      for (const cell of Array.from(row.cells)) {
-        const text = (cell.textContent ?? '')
-          .replace(/\|/g, '\\|')
-          .replace(/\n/g, ' ')
-          .trim();
-        const colspan = Math.max(1, parseInt(cell.getAttribute('colspan') ?? '1', 10) || 1);
-        cells.push(text);
-        for (let i = 1; i < colspan; i++) cells.push(''); // empty placeholders
-      }
-      return cells;
-    };
+    // Build a full 2-D grid that correctly handles both colspan AND rowspan.
+    // HTMLTableRowElement.cells only contains cells explicitly in that row;
+    // columns covered by a rowspan from an earlier row are absent.
+    // We track which grid columns are still "occupied" by a spanning cell.
+    const cellText = (cell: HTMLTableCellElement) =>
+      (cell.textContent ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ').trim();
 
-    const headerCells = expandRow(rows[0]);
-    const separator = headerCells.map(() => '---');
-    const dataRows = rows.slice(1).map((row) => {
-      const expanded = expandRow(row);
-      // Pad or truncate to match header column count
-      while (expanded.length < headerCells.length) expanded.push('');
-      return expanded.slice(0, headerCells.length);
+    // Determine column count from the first row (colspan-expanded).
+    const numCols = Array.from(rows[0].cells).reduce(
+      (sum, c) => sum + Math.max(1, parseInt(c.getAttribute('colspan') ?? '1', 10) || 1),
+      0
+    );
+
+    // grid[r][c] = cell text ('' for merged / empty cells)
+    const grid: string[][] = rows.map(() => new Array(numCols).fill(''));
+    // occupiedUntil[c] = first row index that is NO LONGER occupied by a rowspan
+    const occupiedUntil: number[] = new Array(numCols).fill(0);
+
+    rows.forEach((row, rowIdx) => {
+      let gridCol = 0;
+      for (const cell of Array.from(row.cells)) {
+        // Advance past columns still occupied by a rowspan from above
+        while (gridCol < numCols && occupiedUntil[gridCol] > rowIdx) gridCol++;
+        if (gridCol >= numCols) break;
+
+        const text = cellText(cell);
+        const colspan = Math.max(1, parseInt(cell.getAttribute('colspan') ?? '1', 10) || 1);
+        const rowspan = Math.max(1, parseInt(cell.getAttribute('rowspan') ?? '1', 10) || 1);
+
+        grid[rowIdx][gridCol] = text;
+
+        // Mark the spanned columns in future rows as occupied
+        for (let c = gridCol; c < gridCol + colspan && c < numCols; c++) {
+          occupiedUntil[c] = Math.max(occupiedUntil[c], rowIdx + rowspan);
+        }
+        gridCol += colspan;
+      }
     });
+
+    const headerCells = grid[0];
+    const separator = headerCells.map(() => '---');
+    const dataRows = grid.slice(1);
 
     const lines = [
       `| ${headerCells.join(' | ')} |`,
