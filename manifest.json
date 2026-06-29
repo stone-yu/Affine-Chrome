@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "AFFiNE Web Clipper",
+  "version": "0.1.0",
+  "description": "Clip web pages and special diagrams into AFFiNE",
+  "permissions": ["sidePanel", "activeTab", "scripting", "storage", "tabs"],
+  "side_panel": { "default_path": "sidepanel.html" },
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [{
+    "matches": ["<all_urls>"],
+    "js": ["content.js"],
+    "run_at": "document_idle"
+  }],
+  "action": { "default_title": "AFFiNE Web Clipper" },
+  "options_ui": { "page": "settings.html", "open_in_tab": true }
+}
