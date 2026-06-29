@@ -4,60 +4,92 @@ export interface AFFiNEPayload {
   workspace: string;
 }
 
-const TIMEOUT_MS = 30_000;
+const LOAD_TIMEOUT_MS = 15_000;
+const IMPORT_TIMEOUT_MS = 30_000;
 
-export function sendToAFFiNE(
-  container: HTMLElement,
+export async function sendToAFFiNE(
   affineUrl: string,
   payload: AFFiNEPayload
 ): Promise<void> {
-  if (!affineUrl) return Promise.reject(new Error('AFFiNE URL not configured'));
+  if (!affineUrl) throw new Error('AFFiNE URL not configured');
 
-  return new Promise((resolve, reject) => {
-    const iframe = document.createElement('iframe');
-    iframe.src = `${affineUrl}/clipper/import`;
-    iframe.style.cssText = 'position:fixed;width:0;height:0;border:none;opacity:0;pointer-events:none;';
+  // Open AFFiNE in a background tab rather than a hidden iframe.
+  // Iframes inside extension pages inherit the extension's strict MV3 CSP
+  // (script-src 'self' …), which blocks any external JS the AFFiNE page loads.
+  // A separate browser tab runs under the remote server's own CSP instead.
+  const tab = await chrome.tabs.create({
+    url: `${affineUrl}/clipper/import`,
+    active: false,
+  });
+  const tabId = tab.id!;
+  const closeTab = () => chrome.tabs.remove(tabId).catch(() => {});
 
-    // AFFiNE's fallback (no port) calls window.postMessage() on its OWN window —
-    // which never reaches our side panel. Providing a MessagePort forces AFFiNE to
-    // use port.postMessage() instead, which delivers directly to us via port1.
-    const channel = new MessageChannel();
-
+  // Wait for the page to finish loading before injecting our script.
+  await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
-      cleanup();
-      reject(new Error(
-        'timeout — 请确认：① 已在浏览器中登录 AFFiNE；② AFFiNE 地址正确；③ 自托管版本支持 Clipper 功能（需较新版本）'
-      ));
-    }, TIMEOUT_MS);
+      chrome.tabs.onUpdated.removeListener(listener);
+      closeTab();
+      reject(new Error('页面加载超时，请检查 AFFiNE 地址是否正确且服务正在运行'));
+    }, LOAD_TIMEOUT_MS);
 
-    // Detect network-level load failure (wrong URL, server down, etc.)
-    iframe.addEventListener('error', () => {
-      cleanup();
-      reject(new Error('无法加载 AFFiNE 页面，请检查 AFFiNE 地址是否正确且服务正在运行'));
-    });
-
-    function cleanup() {
-      clearTimeout(timer);
-      channel.port1.close();
-      iframe.remove();
-    }
-
-    channel.port1.onmessage = (event: MessageEvent) => {
-      if (event.data?.type === 'affine-clipper:import:success') {
-        cleanup();
+    function listener(id: number, info: chrome.tabs.TabChangeInfo) {
+      if (id === tabId && info.status === 'complete') {
+        chrome.tabs.onUpdated.removeListener(listener);
+        clearTimeout(timer);
         resolve();
       }
-    };
+    }
+    chrome.tabs.onUpdated.addListener(listener);
+  });
 
-    iframe.addEventListener('load', () => {
-      // Transfer port2 to AFFiNE so it replies via that port
-      iframe.contentWindow?.postMessage(
-        { type: 'affine-clipper:import', payload },
-        affineUrl,
-        [channel.port2]
-      );
+  try {
+    // Inject a script into the AFFiNE tab that:
+    //   1. Sends the import postMessage (with a MessagePort so AFFiNE uses the
+    //      port path rather than its window.postMessage fallback)
+    //   2. Waits for the success reply
+    //   3. Returns true/false to the caller
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (p: { title: string; contentMarkdown: string; workspace: string }) => {
+        return new Promise<boolean>((resolve) => {
+          const channel = new MessageChannel();
+
+          // Path 1: AFFiNE replies via the transferred MessagePort
+          channel.port1.onmessage = (e: MessageEvent) => {
+            if (e?.data?.type === 'affine-clipper:import:success') resolve(true);
+          };
+
+          // Path 2: AFFiNE replies via window.postMessage (fallback)
+          const onMsg = (ev: MessageEvent) => {
+            if (ev?.data?.type === 'affine-clipper:import:success') {
+              window.removeEventListener('message', onMsg);
+              resolve(true);
+            }
+          };
+          window.addEventListener('message', onMsg);
+
+          window.postMessage(
+            { type: 'affine-clipper:import', payload: p },
+            location.origin,
+            [channel.port2]
+          );
+
+          // Inner timeout slightly shorter than the outer so we can report cleanly
+          setTimeout(() => {
+            window.removeEventListener('message', onMsg);
+            resolve(false);
+          }, 28_000);
+        });
+      },
+      args: [payload],
     });
 
-    container.appendChild(iframe);
-  });
+    if (!results?.[0]?.result) {
+      throw new Error(
+        'timeout — 请确认：① 已在浏览器中登录 AFFiNE；② AFFiNE 地址正确；③ 自托管版本支持 Clipper 功能（需较新版本）'
+      );
+    }
+  } finally {
+    closeTab();
+  }
 }

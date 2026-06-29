@@ -110,7 +110,7 @@ function render() {
     state = { kind: 'saving' };
     render();
     try {
-      await sendToAFFiNE(document.body, affineUrl, {
+      await sendToAFFiNE(affineUrl, {
         title: editedTitle,
         contentMarkdown: result.markdown,
         // Fall back to AFFiNE's "last-open-workspace" strategy when no ID is configured
