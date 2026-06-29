@@ -11,22 +11,26 @@ describe('sendToAFFiNE', () => {
     ).rejects.toThrow('AFFiNE URL not configured');
   });
 
-  it('resolves when success message is received', async () => {
+  it('resolves when success message is received via MessagePort', async () => {
     const container = document.getElementById('container')!;
-    // Simulate AFFiNE success reply 50 ms after iframe "loads"
     const original = document.createElement.bind(document);
+    let capturedPort2: MessagePort | null = null;
+
     jest.spyOn(document, 'createElement').mockImplementationOnce((tag: string) => {
       if (tag === 'iframe') {
         const iframe = original('iframe') as HTMLIFrameElement;
-        // Trigger load + success message after a tick
+        // Intercept postMessage to capture port2 that was transferred to AFFiNE.
+        // contentWindow is a read-only getter so we must use defineProperty.
+        const fakeWindow = {
+          postMessage: (_msg: unknown, _origin: string, transfer: Transferable[]) => {
+            if (transfer?.length > 0) capturedPort2 = transfer[0] as MessagePort;
+          },
+        };
+        Object.defineProperty(iframe, 'contentWindow', { get: () => fakeWindow, configurable: true });
         setTimeout(() => {
           iframe.dispatchEvent(new Event('load'));
-          setTimeout(() => {
-            window.dispatchEvent(new MessageEvent('message', {
-              data: { type: 'affine-clipper:import:success' },
-              origin: 'http://localhost:3000',
-            }));
-          }, 10);
+          // AFFiNE responds via port2; port1 receives it
+          setTimeout(() => capturedPort2?.postMessage({ type: 'affine-clipper:import:success' }), 10);
         }, 10);
         return iframe;
       }

@@ -18,31 +18,35 @@ export function sendToAFFiNE(
     iframe.src = `${affineUrl}/clipper/import`;
     iframe.style.cssText = 'position:fixed;width:0;height:0;border:none;opacity:0;pointer-events:none;';
 
+    // AFFiNE's fallback (no port) calls window.postMessage() on its OWN window —
+    // which never reaches our side panel. Providing a MessagePort forces AFFiNE to
+    // use port.postMessage() instead, which delivers directly to us via port1.
+    const channel = new MessageChannel();
+
     const timer = setTimeout(() => {
       cleanup();
       reject(new Error('timeout'));
     }, TIMEOUT_MS);
 
-    function onMessage(event: MessageEvent) {
-      if (new URL(affineUrl).origin !== event.origin) return;
+    function cleanup() {
+      clearTimeout(timer);
+      channel.port1.close();
+      iframe.remove();
+    }
+
+    channel.port1.onmessage = (event: MessageEvent) => {
       if (event.data?.type === 'affine-clipper:import:success') {
         cleanup();
         resolve();
       }
-    }
-
-    function cleanup() {
-      clearTimeout(timer);
-      window.removeEventListener('message', onMessage);
-      iframe.remove();
-    }
-
-    window.addEventListener('message', onMessage);
+    };
 
     iframe.addEventListener('load', () => {
+      // Transfer port2 to AFFiNE so it replies via that port
       iframe.contentWindow?.postMessage(
         { type: 'affine-clipper:import', payload },
-        affineUrl
+        affineUrl,
+        [channel.port2]
       );
     });
 
