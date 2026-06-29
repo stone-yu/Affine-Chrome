@@ -1,4 +1,4 @@
-import * as TurndownService from 'turndown';
+import TurndownService from 'turndown';
 
 const td = new TurndownService({
   headingStyle: 'atx',
