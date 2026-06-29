@@ -21,14 +21,29 @@ td.addRule('all-tables', {
     const rows = Array.from(table.rows);
     if (rows.length === 0) return '';
 
-    const cellText = (cell: Element) =>
-      (cell.textContent ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ').trim();
+    // Expand a row into flat cell strings, filling empty strings for merged columns.
+    const expandRow = (row: HTMLTableRowElement): string[] => {
+      const cells: string[] = [];
+      for (const cell of Array.from(row.cells)) {
+        const text = (cell.textContent ?? '')
+          .replace(/\|/g, '\\|')
+          .replace(/\n/g, ' ')
+          .trim();
+        const colspan = Math.max(1, parseInt(cell.getAttribute('colspan') ?? '1', 10) || 1);
+        cells.push(text);
+        for (let i = 1; i < colspan; i++) cells.push(''); // empty placeholders
+      }
+      return cells;
+    };
 
-    const headerCells = Array.from(rows[0].cells).map(cellText);
+    const headerCells = expandRow(rows[0]);
     const separator = headerCells.map(() => '---');
-    const dataRows = rows.slice(1).map((row) =>
-      Array.from(row.cells).map(cellText)
-    );
+    const dataRows = rows.slice(1).map((row) => {
+      const expanded = expandRow(row);
+      // Pad or truncate to match header column count
+      while (expanded.length < headerCells.length) expanded.push('');
+      return expanded.slice(0, headerCells.length);
+    });
 
     const lines = [
       `| ${headerCells.join(' | ')} |`,

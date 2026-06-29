@@ -9,18 +9,25 @@ interface NodeRule {
 }
 
 const RULES: NodeRule[] = [
-  // km.sankuai.com DrawIO: Citadel renders :::drawio{src="..."}::: either as:
-  //   (a) <img src="https://km.sankuai.com/api/file/cdn/..."> — direct image tag
-  //   (b) an inline <svg content="<mxfile...>"> — the SVG is fetched and inlined
-  // The `content` attribute containing mxGraph XML is the fingerprint for (b).
+  // km.sankuai.com DrawIO: Citadel renders :::drawio{src="..."}::: in several ways.
+  // We try every known pattern; console logs show which ones actually match.
   {
     match: 'km.sankuai.com',
     selector: [
-      'svg[content]',               // inline DrawIO SVG (most common in Citadel)
+      // Inline SVG with mxGraph content attribute (most common when Citadel inlines the SVG)
+      'svg[content]',
+      // DrawIO SVGs are characterised by <foreignObject> inside; viewBox starting at -0.5
+      // is the default drawio padding — use as heuristic to catch unlabelled inline SVGs
+      'svg[viewBox^="-0.5"]',
+      // Citadel/Quark data-node-type attributes
       '[data-node-type="drawio"]',
+      '[data-node-type="drawio"] svg',
+      '[data-node-type="drawio"] img',
+      // Generic CDN image patterns
       'img[src*="/api/file/cdn/"]',
       'img[data-src*="/api/file/cdn/"]',
       'img[src*="contentType=0"]',
+      'img[src*="isNewContent"]',
     ].join(', '),
     kind: 'DrawIO',
     label: 'DrawIO 图表',
@@ -50,6 +57,24 @@ export function findAndPrepare(
         found.push({ element: el, rule });
       }
     });
+  }
+
+  // Diagnostic logging — visible in DevTools on the clipped page's console
+  if (hostname.includes('km.sankuai.com')) {
+    console.group('[AFFiNE Clipper] DrawIO detection on km.sankuai.com');
+    console.log('Total SVGs on page:', document.querySelectorAll('svg').length);
+    console.log('svg[content]:', document.querySelectorAll('svg[content]').length);
+    console.log('svg[viewBox^="-0.5"]:', document.querySelectorAll('svg[viewBox^="-0.5"]').length);
+    console.log('img[src*=cdn]:', document.querySelectorAll('img[src*="/api/file/cdn/"]').length);
+    console.log('[data-node-type=drawio]:', document.querySelectorAll('[data-node-type="drawio"]').length);
+    console.log('Total matched special nodes:', found.length);
+    found.forEach(({ element, rule }, i) => {
+      console.log(`  [${i}] ${rule.kind} → <${element.tagName.toLowerCase()}>`
+        + ` class="${element.getAttribute('class') ?? ''}"`,
+        element
+      );
+    });
+    console.groupEnd();
   }
 
   // Build jobs referencing original elements
