@@ -3,54 +3,77 @@ import { extractArticle } from './extractor';
 import { toMarkdown } from './markdown';
 import { findAndPrepare, captureAll, substituteImages } from './special-nodes';
 
+/** Blob → base-64 data URI (inline helper so we don't need an extra import). */
+function blobToDataUri(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
 /**
- * Directly find and fetch DrawIO images from the page DOM, completely bypassing
- * Readability. This is necessary because:
- *   1. Readability strips <img src="affine-img://..."> placeholders (non-std scheme).
- *   2. The CDN URLs require session cookies; fetch() from a content script has them.
+ * Directly find and capture DrawIO diagrams on km.sankuai.com, bypassing
+ * Readability entirely.  Two render strategies are tried:
  *
- * We scan for known DrawIO img selectors, fetch each SVG, and return data URIs.
+ *   A. <img src="…/api/file/cdn/…"> — fetch the SVG with session cookies.
+ *   B. Inline <svg viewBox="-0.5 …"> — serialize the already-rendered DOM node.
+ *      DrawIO SVGs always have a viewBox starting at -0.5; UI icons are tiny,
+ *      so we skip any SVG whose rendered width × height is less than 200 × 100.
  */
 async function captureDrawioDirectly(hostname: string): Promise<string[]> {
   if (!hostname.includes('km.sankuai.com')) return [];
 
+  const results: string[] = [];
+
+  // ── A: img elements with CDN URLs ────────────────────────────────────────
   const imgs = Array.from(
     document.querySelectorAll(
       'img[src*="/api/file/cdn/"], img[src*="contentType=0"], img[data-src*="/api/file/cdn/"]'
     )
   ) as HTMLImageElement[];
+  console.log(`[AFFiNE Clipper] DrawIO: ${imgs.length} <img> candidate(s)`);
 
-  console.log(`[AFFiNE Clipper] DrawIO direct-capture: found ${imgs.length} candidate img(s)`);
-  if (imgs.length === 0) return [];
-
-  const results: string[] = [];
   for (const img of imgs) {
     const src = img.src || img.dataset['src'] || '';
     if (!src || src.startsWith('data:')) continue;
-
-    console.log(`[AFFiNE Clipper]   fetching ${src.substring(0, 80)}…`);
+    console.log(`[AFFiNE Clipper]   fetching img ${src.substring(0, 80)}`);
     try {
       const res = await fetch(src, { credentials: 'include' });
-      console.log(`[AFFiNE Clipper]   → status=${res.status} type=${res.headers.get('content-type')}`);
-      if (!res.ok) {
-        console.warn(`[AFFiNE Clipper]   fetch failed (${res.status})`);
-        continue;
-      }
+      console.log(`[AFFiNE Clipper]   status=${res.status}`);
+      if (!res.ok) continue;
       const blob = await res.blob();
-      console.log(`[AFFiNE Clipper]   blob size=${blob.size}`);
-      const dataUri = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result as string);
-        reader.onerror = reject;
-        reader.readAsDataURL(blob);
-      });
-      results.push(dataUri);
-      console.log(`[AFFiNE Clipper]   ✓ captured, dataUri.length=${dataUri.length}`);
+      results.push(await blobToDataUri(blob));
+      console.log(`[AFFiNE Clipper]   ✓ img ${blob.size}B`);
     } catch (err) {
-      console.warn('[AFFiNE Clipper]   fetch error:', err);
+      console.warn('[AFFiNE Clipper]   img fetch error:', err);
     }
   }
-  console.log(`[AFFiNE Clipper] DrawIO direct-capture: ${results.length}/${imgs.length} succeeded`);
+
+  // ── B: inline SVG elements ────────────────────────────────────────────────
+  const svgs = Array.from(
+    document.querySelectorAll('svg[viewBox^="-0.5"]')
+  ) as SVGSVGElement[];
+  console.log(`[AFFiNE Clipper] DrawIO: ${svgs.length} <svg viewBox^="-0.5"> candidate(s)`);
+
+  for (const svg of svgs) {
+    // DrawIO diagrams are large; skip tiny UI icons
+    const { width, height } = svg.getBoundingClientRect();
+    console.log(`[AFFiNE Clipper]   svg size=${width.toFixed(0)}×${height.toFixed(0)}`);
+    if (width < 200 || height < 100) continue;
+
+    try {
+      const svgText = new XMLSerializer().serializeToString(svg);
+      const b64 = btoa(unescape(encodeURIComponent(svgText)));
+      results.push(`data:image/svg+xml;base64,${b64}`);
+      console.log(`[AFFiNE Clipper]   ✓ svg serialized`);
+    } catch (err) {
+      console.warn('[AFFiNE Clipper]   svg serialize error:', err);
+    }
+  }
+
+  console.log(`[AFFiNE Clipper] DrawIO direct-capture: ${results.length} total`);
   return results;
 }
 
@@ -58,7 +81,7 @@ async function performExtraction(): Promise<ExtractResult | ExtractError> {
   try {
     const hostname = location.hostname;
 
-    // ── Step 1: extract text + general special nodes ──────────────────────
+    // ── Step 1: text + general special nodes ─────────────────────────────
     const { modifiedClone, jobs } = findAndPrepare(document);
 
     const article = extractArticle(modifiedClone);
@@ -70,7 +93,7 @@ async function performExtraction(): Promise<ExtractResult | ExtractError> {
     const images = await captureAll(jobs);
     let finalMarkdown = substituteImages(markdown, images);
 
-    // ── Step 2: DrawIO on km.sankuai.com (direct fetch, bypasses Readability) ─
+    // ── Step 2: DrawIO diagrams (independent of Readability) ─────────────
     const drawioUris = await captureDrawioDirectly(hostname);
     if (drawioUris.length > 0) {
       finalMarkdown +=
