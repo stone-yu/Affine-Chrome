@@ -76,6 +76,20 @@ td.addRule('all-tables', {
   },
 });
 
+// Handle bold text that uses CSS font-weight instead of <strong>/<b> tags.
+// Citadel and many web editors style bold via class or inline style rather
+// than semantic HTML, so Turndown's built-in bold rule misses them.
+td.addRule('css-bold', {
+  filter: (node: HTMLElement) => {
+    // Only inline-ish elements; avoid wrapping headings/blocks in **
+    const INLINE = new Set(['SPAN', 'A', 'LABEL', 'CITE', 'DFN', 'ABBR', 'ACRONYM', 'MARK']);
+    if (!INLINE.has(node.nodeName)) return false;
+    const fw = node.style?.fontWeight ?? '';
+    return fw === 'bold' || fw === '700' || fw === '600';
+  },
+  replacement: (content: string) => (content.trim() ? `**${content.trim()}**` : ''),
+});
+
 // Preserve affine-img:// URIs — TurndownService would otherwise encode them
 td.addRule('affine-img', {
   filter: (node: HTMLElement) =>
