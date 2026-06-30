@@ -23,6 +23,16 @@ td.addRule('underline', {
   replacement: (content: string) => (content ? `<u>${content}</u>` : ''),
 });
 
+// ── Bold: always use HTML <b> tags instead of **...**  ────────────────────
+// GFM **..** fails when bold content starts/ends with Unicode punctuation
+// (e.g. curly quotes "text"): CommonMark left-flanking delimiter rules
+// require the ** to be preceded by whitespace/punctuation, which Chinese
+// text like 定位为** doesn't satisfy.  <b> is unambiguous for all parsers.
+td.addRule('strong', {
+  filter: ['strong', 'b'],
+  replacement: (content: string) => (content.trim() ? `<b>${content.trim()}</b>` : ''),
+});
+
 // ── CSS bold (font-weight without <strong>/<b>) ────────────────────────────
 td.addRule('css-bold', {
   filter: (node: HTMLElement) => {
@@ -31,7 +41,7 @@ td.addRule('css-bold', {
     const fw = node.style?.fontWeight ?? '';
     return fw === 'bold' || fw === '700' || fw === '600';
   },
-  replacement: (content: string) => (content.trim() ? `**${content.trim()}**` : ''),
+  replacement: (content: string) => (content.trim() ? `<b>${content.trim()}</b>` : ''),
 });
 
 // ── Callout / Note blocks (Citadel :::note{type=info}:::) ─────────────────
@@ -75,13 +85,14 @@ td.addRule('all-tables', {
     const rows = Array.from(table.rows);
     if (rows.length === 0) return '';
 
-    // Convert a cell's HTML to Markdown, preserving newlines as <br>.
-    // GFM pipe tables don't support literal newlines inside cells, but
-    // AFFiNE's importer handles <br> correctly.
+    // Convert a cell's HTML to Markdown, preserving meaningful line breaks.
+    // - Paragraph boundaries (\n\n) → single <br>  (no extra blank line)
+    // - Inline newlines  (\n)       → space
     const cellMd = (cell: HTMLTableCellElement): string => {
       const raw = td.turndown(cell.innerHTML);
       return raw
-        .replace(/\n+/g, '<br>')   // preserve line breaks inside cells
+        .replace(/\n{2,}/g, '<br>') // paragraph break → single <br>
+        .replace(/\n/g, ' ')         // inline newline → space
         .replace(/\|/g, '\\|')
         .trim();
     };

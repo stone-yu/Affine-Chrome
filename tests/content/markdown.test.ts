@@ -31,6 +31,6 @@ describe('toMarkdown', () => {
   });
 
   it('converts strong to bold', () => {
-    expect(toMarkdown('<strong>bold</strong>')).toBe('**bold**');
+    expect(toMarkdown('<strong>bold</strong>')).toBe('<b>bold</b>');
   });
 });
