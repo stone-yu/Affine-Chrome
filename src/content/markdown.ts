@@ -91,8 +91,8 @@ td.addRule('all-tables', {
     const cellMd = (cell: HTMLTableCellElement): string => {
       const raw = td.turndown(cell.innerHTML);
       return raw
-        .replace(/\n{2,}/g, '<br>') // paragraph break → single <br>
-        .replace(/\n/g, ' ')         // inline newline → space
+        .replace(/\n{2,}/g, '\n')  // collapse multiple newlines → single \n
+        .replace(/\n/g, '<br>')     // every newline → <br> (no blank lines)
         .replace(/\|/g, '\\|')
         .trim();
     };
