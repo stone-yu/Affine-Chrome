@@ -84,8 +84,12 @@ export function findAndPrepare(
 
     // Look inside the Citadel editor container for note/callout block structure
     console.group('Citadel editor direct children (note block detection):');
-    // ProseMirror is the actual editor container; look at ITS direct children
-    const editorContent = document.querySelector('.ProseMirror, .react-markdown-render, .ct-editor');
+    // The real content is in the INNER ProseMirror (the outer one has layout wrappers).
+    // '.ProseMirror .ProseMirror' selects the nested content div.
+    const editorContent =
+      document.querySelector('.ProseMirror .ProseMirror') ||
+      document.querySelector('.ProseMirror') ||
+      document.querySelector('.react-markdown-render');
     if (editorContent) {
       Array.from(editorContent.children).forEach((el, i) => {
         if (i > 30) return;
