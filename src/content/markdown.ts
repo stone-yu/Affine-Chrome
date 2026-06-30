@@ -7,16 +7,64 @@ const td = new TurndownService({
   bulletListMarker: '-',
 });
 
-// Use only the non-table parts of GFM.
-// The GFM `tables` plugin calls `turndownService.keep(...)` for tables that
-// lack <th> headers, and `keep` rules have HIGHER priority than `addRule` rules,
-// so our custom table rule would never fire for those tables.
-// By omitting the tables plugin entirely we avoid that conflict.
 td.use(strikethrough);
 td.use(taskListItems);
 
-// Convert ALL tables to pipe format: expand merged cells (colspan) with empty
-// placeholders, treat the first row as the header regardless of <th>/<td>.
+// ── Underline ──────────────────────────────────────────────────────────────
+// Citadel uses __..__ for underline (not bold), which renders as <u>.
+// Standard Markdown has no underline; we emit inline HTML <u>...</u> since
+// AFFiNE's Markdown importer handles it.
+td.addRule('underline', {
+  filter: (node: HTMLElement) => {
+    if (node.nodeName === 'U') return true;
+    const td_ = node.style?.textDecoration ?? '';
+    return (td_.includes('underline') && ['SPAN', 'A', 'LABEL'].includes(node.nodeName));
+  },
+  replacement: (content: string) => (content ? `<u>${content}</u>` : ''),
+});
+
+// ── CSS bold (font-weight without <strong>/<b>) ────────────────────────────
+td.addRule('css-bold', {
+  filter: (node: HTMLElement) => {
+    const INLINE = new Set(['SPAN', 'A', 'LABEL', 'CITE', 'DFN', 'ABBR', 'MARK']);
+    if (!INLINE.has(node.nodeName)) return false;
+    const fw = node.style?.fontWeight ?? '';
+    return fw === 'bold' || fw === '700' || fw === '600';
+  },
+  replacement: (content: string) => (content.trim() ? `**${content.trim()}**` : ''),
+});
+
+// ── Callout / Note blocks (Citadel :::note{type=info}:::) ─────────────────
+// Citadel renders note/callout blocks as a div with a class that typically
+// contains "note" or "callout".  We convert them to Markdown blockquote.
+td.addRule('callout', {
+  filter: (node: HTMLElement) => {
+    if (node.nodeName !== 'DIV' && node.nodeName !== 'SECTION') return false;
+    const cls = (node.getAttribute('class') ?? '').toLowerCase();
+    return cls.includes('note') || cls.includes('callout') || cls.includes('tip') ||
+           cls.includes('warning') || cls.includes('info') || cls.includes('alert');
+  },
+  replacement: (content: string) => {
+    const lines = content.trim().split('\n').map(l => `> ${l}`).join('\n');
+    return '\n\n' + lines + '\n\n';
+  },
+});
+
+// ── Collapsible / expand blocks (<details>/<summary>) ─────────────────────
+// Citadel :::collapse{...}::: renders as <details><summary>title</summary>content</details>.
+// We preserve the summary as a bold heading and include the body.
+td.addRule('details', {
+  filter: 'details',
+  replacement: (content: string) => '\n\n' + content.trim() + '\n\n',
+});
+td.addRule('summary', {
+  filter: 'summary',
+  replacement: (content: string) => `\n\n**▶ ${content.trim()}**\n\n`,
+});
+
+// ── Tables (full 2-D grid: colspan + rowspan + formatted cells) ────────────
+// IMPORTANT: cell content is converted via Turndown itself (not raw textContent)
+// so bold, lists, strikethrough etc. inside cells are preserved.
 td.addRule('all-tables', {
   filter: ['table'],
   replacement: (_content, node) => {
@@ -24,38 +72,37 @@ td.addRule('all-tables', {
     const rows = Array.from(table.rows);
     if (rows.length === 0) return '';
 
-    // Build a full 2-D grid that correctly handles both colspan AND rowspan.
-    // HTMLTableRowElement.cells only contains cells explicitly in that row;
-    // columns covered by a rowspan from an earlier row are absent.
-    // We track which grid columns are still "occupied" by a spanning cell.
-    const cellText = (cell: HTMLTableCellElement) =>
-      (cell.textContent ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ').trim();
+    // Convert a cell's HTML to a single-line Markdown string.
+    // Multi-line content (lists, paragraphs) is joined with " · ".
+    const cellMd = (cell: HTMLTableCellElement): string => {
+      const raw = td.turndown(cell.innerHTML);
+      return raw
+        .replace(/\n+/g, ' · ')  // collapse newlines for table cells
+        .replace(/\|/g, '\\|')
+        .trim();
+    };
 
-    // Determine column count from the first row (colspan-expanded).
+    // Determine column count (colspan-expanded) from the first row.
     const numCols = Array.from(rows[0].cells).reduce(
       (sum, c) => sum + Math.max(1, parseInt(c.getAttribute('colspan') ?? '1', 10) || 1),
       0
     );
 
-    // grid[r][c] = cell text ('' for merged / empty cells)
     const grid: string[][] = rows.map(() => new Array(numCols).fill(''));
-    // occupiedUntil[c] = first row index that is NO LONGER occupied by a rowspan
     const occupiedUntil: number[] = new Array(numCols).fill(0);
 
     rows.forEach((row, rowIdx) => {
       let gridCol = 0;
       for (const cell of Array.from(row.cells)) {
-        // Advance past columns still occupied by a rowspan from above
         while (gridCol < numCols && occupiedUntil[gridCol] > rowIdx) gridCol++;
         if (gridCol >= numCols) break;
 
-        const text = cellText(cell);
+        const text = cellMd(cell);
         const colspan = Math.max(1, parseInt(cell.getAttribute('colspan') ?? '1', 10) || 1);
         const rowspan = Math.max(1, parseInt(cell.getAttribute('rowspan') ?? '1', 10) || 1);
 
         grid[rowIdx][gridCol] = text;
 
-        // Mark the spanned columns in future rows as occupied
         for (let c = gridCol; c < gridCol + colspan && c < numCols; c++) {
           occupiedUntil[c] = Math.max(occupiedUntil[c], rowIdx + rowspan);
         }
@@ -76,30 +123,14 @@ td.addRule('all-tables', {
   },
 });
 
-// Handle bold text that uses CSS font-weight instead of <strong>/<b> tags.
-// Citadel and many web editors style bold via class or inline style rather
-// than semantic HTML, so Turndown's built-in bold rule misses them.
-td.addRule('css-bold', {
-  filter: (node: HTMLElement) => {
-    // Only inline-ish elements; avoid wrapping headings/blocks in **
-    const INLINE = new Set(['SPAN', 'A', 'LABEL', 'CITE', 'DFN', 'ABBR', 'ACRONYM', 'MARK']);
-    if (!INLINE.has(node.nodeName)) return false;
-    const fw = node.style?.fontWeight ?? '';
-    return fw === 'bold' || fw === '700' || fw === '600';
-  },
-  replacement: (content: string) => (content.trim() ? `**${content.trim()}**` : ''),
-});
-
-// Preserve affine-img:// URIs — TurndownService would otherwise encode them
+// ── Preserve affine-img:// URIs ────────────────────────────────────────────
 td.addRule('affine-img', {
   filter: (node: HTMLElement) =>
     node.nodeName === 'IMG' &&
     (node as HTMLImageElement).getAttribute('src')?.startsWith('affine-img://') === true,
   replacement: (_content: string, node: HTMLElement) => {
     const img = node as HTMLImageElement;
-    const src = img.getAttribute('src') ?? '';
-    const alt = img.getAttribute('alt') ?? '';
-    return `![${alt}](${src})`;
+    return `![${img.getAttribute('alt') ?? ''}](${img.getAttribute('src') ?? ''})`;
   },
 });
 
