@@ -82,18 +82,28 @@ export function findAndPrepare(
     });
     console.groupEnd();
 
-    // Log top-level block elements to discover note/callout HTML structure
-    console.group('Top-level blocks (for note/callout detection):');
-    document.querySelectorAll('main > *, article > *, [class*="content"] > *').forEach((el, i) => {
-      if (i > 20) return;
-      const cls = (el.getAttribute('class') ?? '').substring(0, 80);
-      const role = el.getAttribute('role') ?? '';
-      const dataType = el.getAttribute('data-type') ?? el.getAttribute('data-node-type') ?? '';
-      const preview = (el.textContent ?? '').trim().substring(0, 40);
-      if (cls || role || dataType) {
-        console.log(`  [${i}] <${el.tagName.toLowerCase()}> class="${cls}" role="${role}" data-type="${dataType}" text="${preview}"`);
-      }
-    });
+    // Look inside the Citadel editor container for note/callout block structure
+    console.group('Citadel editor direct children (note block detection):');
+    const editorContent = document.querySelector('.react-markdown-render, .ct-editor, [class*="editor-content"]');
+    if (editorContent) {
+      Array.from(editorContent.children).forEach((el, i) => {
+        if (i > 30) return;
+        const cls = (el.getAttribute('class') ?? '').substring(0, 100);
+        const dataType = el.getAttribute('data-type') ?? el.getAttribute('data-node-type') ?? '';
+        const preview = (el.textContent ?? '').trim().replace(/\s+/g, ' ').substring(0, 50);
+        console.log(`  [${i}] <${el.tagName.toLowerCase()}> class="${cls}" data-type="${dataType}" text="${preview}"`);
+      });
+    } else {
+      console.log('  editor container not found — dumping first 15 divs with class:');
+      let count = 0;
+      document.querySelectorAll('div[class]').forEach(el => {
+        if (count++ > 15) return;
+        const cls = el.getAttribute('class') ?? '';
+        if (cls.includes('note') || cls.includes('callout') || cls.includes('info') || cls.includes('block')) {
+          console.log(`  <div class="${cls.substring(0, 100)}"> text="${(el.textContent ?? '').trim().substring(0, 50)}"`);
+        }
+      });
+    }
     console.groupEnd();
 
     // Check for iframes (DrawIO might be inside one)
