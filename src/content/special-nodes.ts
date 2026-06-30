@@ -82,6 +82,20 @@ export function findAndPrepare(
     });
     console.groupEnd();
 
+    // Log top-level block elements to discover note/callout HTML structure
+    console.group('Top-level blocks (for note/callout detection):');
+    document.querySelectorAll('main > *, article > *, [class*="content"] > *').forEach((el, i) => {
+      if (i > 20) return;
+      const cls = (el.getAttribute('class') ?? '').substring(0, 80);
+      const role = el.getAttribute('role') ?? '';
+      const dataType = el.getAttribute('data-type') ?? el.getAttribute('data-node-type') ?? '';
+      const preview = (el.textContent ?? '').trim().substring(0, 40);
+      if (cls || role || dataType) {
+        console.log(`  [${i}] <${el.tagName.toLowerCase()}> class="${cls}" role="${role}" data-type="${dataType}" text="${preview}"`);
+      }
+    });
+    console.groupEnd();
+
     // Check for iframes (DrawIO might be inside one)
     const iframes = document.querySelectorAll('iframe');
     console.log('iframes on page:', iframes.length);

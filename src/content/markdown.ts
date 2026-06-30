@@ -35,14 +35,17 @@ td.addRule('css-bold', {
 });
 
 // ── Callout / Note blocks (Citadel :::note{type=info}:::) ─────────────────
-// Citadel renders note/callout blocks as a div with a class that typically
-// contains "note" or "callout".  We convert them to Markdown blockquote.
+// Citadel renders note/callout blocks as a div whose class or data attributes
+// indicate a "note", "callout", "tip", "warning", "info", or "alert" role.
+// We convert them to Markdown blockquote (> ...).
 td.addRule('callout', {
   filter: (node: HTMLElement) => {
-    if (node.nodeName !== 'DIV' && node.nodeName !== 'SECTION') return false;
+    if (!['DIV', 'SECTION', 'ASIDE'].includes(node.nodeName)) return false;
     const cls = (node.getAttribute('class') ?? '').toLowerCase();
-    return cls.includes('note') || cls.includes('callout') || cls.includes('tip') ||
-           cls.includes('warning') || cls.includes('info') || cls.includes('alert');
+    const dataType = (node.getAttribute('data-type') ?? node.getAttribute('data-node-type') ?? '').toLowerCase();
+    const role = (node.getAttribute('role') ?? '').toLowerCase();
+    const keywords = ['note', 'callout', 'tip', 'warning', 'info', 'alert', 'notice', 'hint', 'quark'];
+    return keywords.some(k => cls.includes(k) || dataType.includes(k) || role.includes(k));
   },
   replacement: (content: string) => {
     const lines = content.trim().split('\n').map(l => `> ${l}`).join('\n');
@@ -72,12 +75,13 @@ td.addRule('all-tables', {
     const rows = Array.from(table.rows);
     if (rows.length === 0) return '';
 
-    // Convert a cell's HTML to a single-line Markdown string.
-    // Multi-line content (lists, paragraphs) is joined with " · ".
+    // Convert a cell's HTML to Markdown, preserving newlines as <br>.
+    // GFM pipe tables don't support literal newlines inside cells, but
+    // AFFiNE's importer handles <br> correctly.
     const cellMd = (cell: HTMLTableCellElement): string => {
       const raw = td.turndown(cell.innerHTML);
       return raw
-        .replace(/\n+/g, ' · ')  // collapse newlines for table cells
+        .replace(/\n+/g, '<br>')   // preserve line breaks inside cells
         .replace(/\|/g, '\\|')
         .trim();
     };
