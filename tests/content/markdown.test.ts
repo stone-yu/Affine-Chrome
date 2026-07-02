@@ -33,4 +33,50 @@ describe('toMarkdown', () => {
   it('converts strong to bold', () => {
     expect(toMarkdown('<strong>bold</strong>')).toBe('<b>bold</b>');
   });
+
+  it('callout with list items: no > prefix (AFFiNE cannot handle > - item)', () => {
+    const html = `<div data-type="blockquote"><ul><li>item 1</li><li>item 2</li></ul></div>`;
+    const md = toMarkdown(html);
+    expect(md).not.toMatch(/^> /m);  // no blockquote prefix
+    expect(md).toContain('item 1');
+    expect(md).toContain('item 2');
+  });
+
+  it('callout without list items: keeps > prefix', () => {
+    const html = `<div class="km-quote-block">some plain quoted text</div>`;
+    const md = toMarkdown(html);
+    expect(md).toContain('> some plain quoted text');
+  });
+
+  it('table cell with ordered list does not start with <br>', () => {
+    const html = `<table><tr><th>名词</th><th>解释</th></tr><tr><td>渠道</td><td><ol><li>第一条</li><li>第二条</li></ol></td></tr></table>`;
+    const md = toMarkdown(html);
+    // cell content must not start with <br>
+    const cellContent = md.split('|').find(part => part.includes('第一条')) ?? '';
+    expect(cellContent.trimStart()).not.toMatch(/^<br>/);
+    expect(cellContent).toContain('第一条');
+    expect(cellContent).toContain('第二条');
+  });
+
+  it('Citadel code block: <pre data-language> without <code> child → fenced block', () => {
+    const html = `<pre data-language="SQL">SELECT * FROM t;</pre>`;
+    const md = toMarkdown(html);
+    expect(md).toContain('```sql');
+    expect(md).toContain('SELECT * FROM t;');
+    expect(md).toContain('```');
+  });
+
+  it('Citadel code block: <pre data-language> with <code> child → fenced block', () => {
+    const html = `<pre data-language="JavaScript"><code>const x = 1;</code></pre>`;
+    const md = toMarkdown(html);
+    expect(md).toContain('```javascript');
+    expect(md).toContain('const x = 1;');
+  });
+
+  it('Citadel code block: language attribute is lowercased', () => {
+    const html = `<pre data-language="SQL">SELECT 1;</pre>`;
+    const md = toMarkdown(html);
+    expect(md).toContain('```sql');
+    expect(md).not.toContain('```SQL');
+  });
 });

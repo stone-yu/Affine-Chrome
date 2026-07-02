@@ -1,4 +1,4 @@
-import { findAndPrepare, substituteImages } from '../../src/content/special-nodes';
+import { findAndPrepare, substituteImages, toPlantUmlSvgUrl } from '../../src/content/special-nodes';
 
 function makeDoc(body: string): Document {
   const doc = document.implementation.createHTMLDocument('');
@@ -51,11 +51,12 @@ describe('substituteImages', () => {
     expect(substituteImages(md, map)).toBe('![DrawIO](data:image/png;base64,ABC)');
   });
 
-  it('removes image line when id has no captured data', () => {
+  it('keeps affine-img:// placeholder when id has no captured data (preserves position for retry)', () => {
     const md = 'before\n![DrawIO](affine-img://node-0)\nafter';
     const map = new Map<string, string>();
     const result = substituteImages(md, map);
-    expect(result).not.toContain('affine-img://node-0');
+    // placeholder is kept so insertDrawioImages can replace it at the correct position
+    expect(result).toContain('affine-img://node-0');
     expect(result).toContain('before');
     expect(result).toContain('after');
   });
@@ -69,5 +70,32 @@ describe('substituteImages', () => {
     const result = substituteImages(md, map);
     expect(result).toContain('data:image/png;base64,AAA');
     expect(result).toContain('data:image/png;base64,BBB');
+  });
+});
+
+describe('toPlantUmlSvgUrl', () => {
+  it('replaces png format with svg', () => {
+    const src = 'https://km.sankuai.com/plantuml/png/bLHDQnD16BxFhtZDAO6Oc8AN';
+    expect(toPlantUmlSvgUrl(src)).toBe('https://km.sankuai.com/plantuml/svg/bLHDQnD16BxFhtZDAO6Oc8AN');
+  });
+
+  it('replaces jpg format with svg', () => {
+    const src = 'https://km.sankuai.com/plantuml/jpg/ENCODED';
+    expect(toPlantUmlSvgUrl(src)).toBe('https://km.sankuai.com/plantuml/svg/ENCODED');
+  });
+
+  it('replaces txt format with svg', () => {
+    const src = 'https://km.sankuai.com/plantuml/txt/ENCODED';
+    expect(toPlantUmlSvgUrl(src)).toBe('https://km.sankuai.com/plantuml/svg/ENCODED');
+  });
+
+  it('leaves unrelated URLs unchanged', () => {
+    const src = 'https://example.com/image.png';
+    expect(toPlantUmlSvgUrl(src)).toBe(src);
+  });
+
+  it('does not double-replace already-svg URLs', () => {
+    const src = 'https://km.sankuai.com/plantuml/svg/ENCODED';
+    expect(toPlantUmlSvgUrl(src)).toBe(src);
   });
 });

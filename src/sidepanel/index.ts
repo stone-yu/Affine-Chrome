@@ -33,6 +33,9 @@ const STYLES = `
   .result p { font-size: 13px; color: #555; margin-bottom: 16px; }
   .result a { color: #0070f3; font-size: 13px; }
   .error-msg { color: #c00; font-size: 12px; margin-top: 8px; }
+  details.md-preview { margin-top: 12px; border: 1px solid #eee; border-radius: 6px; }
+  details.md-preview summary { padding: 7px 10px; font-size: 12px; color: #555; cursor: pointer; user-select: none; }
+  details.md-preview pre { margin: 0; padding: 10px; font-size: 11px; white-space: pre-wrap; word-break: break-all; max-height: 300px; overflow-y: auto; background: #f6f6f6; border-top: 1px solid #eee; border-radius: 0 0 6px 6px; }
 `;
 
 type State =
@@ -97,6 +100,10 @@ function render() {
       ${workspaceHtml}
       ${isConfigured ? `<button class="save" id="saveBtn">保存到 AFFiNE</button>` : ''}
       <div class="error-msg" id="errMsg"></div>
+      <details class="md-preview">
+        <summary>查看 Markdown 原文</summary>
+        <pre>${htmlEscape(result.markdown)}</pre>
+      </details>
     </div>
   `;
 

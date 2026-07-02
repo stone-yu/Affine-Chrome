@@ -1,4 +1,3 @@
-import html2canvas from 'html2canvas';
 import type { CaptureJob, SpecialNodeInfo } from '../types';
 
 interface NodeRule {
@@ -35,10 +34,96 @@ const RULES: NodeRule[] = [
   { match: '*', selector: '.mermaid > svg, [class*="mermaid"] > svg', kind: 'Mermaid', label: 'Mermaid 图表' },
   { match: '*', selector: 'img[src*="plantuml"]', kind: 'PlantUML', label: 'PlantUML 图表' },
   { match: '*', selector: '.chart-container svg, .diagram-container svg, [class*="echarts"] svg', kind: 'Chart', label: '图表' },
+  // Citadel :::open_iframe (Mermaid) and :::html (HTML blocks).
+  // These render as a container <div data-node-id="..."> with a direct <iframe> child.
+  // We don't rely on data-node-type (which varies by Citadel version) — instead we
+  // detect by CSS :has(> iframe) so the ENTIRE container (including loading-state UI
+  // text like "Mermaid（内测）服务加载中...") is replaced with the placeholder,
+  // preventing that text from leaking into the Markdown output.
+  // Fallback selectors included for known data-node-type values.
+  // Citadel :::html → <div class="pk-html"><iframe src="onejs.meituan.net/..."></iframe></div>
+  // The container has no data-node-id — must use class name.
+  { match: 'km.sankuai.com', selector: '.pk-html', kind: 'HtmlBlock', label: 'HTML 块' },
+  // Citadel :::open_iframe (Mermaid / 3rd-party embeds).
+  // Log shows: <div class="ct-node-view-dom" data-type="511H2i0612540259">
+  // Citadel wraps ALL complex node views in ct-node-view-dom — including tables,
+  // code blocks, and drawio.  Standard blocks have data-type="" (empty).
+  // Plugin/embed blocks (Mermaid, etc.) have a non-empty plugin type ID in data-type.
+  // Selector: require non-empty data-type to exclude tables and other standard blocks.
+  {
+    match: 'km.sankuai.com',
+    selector: [
+      'div.ct-node-view-dom[data-type]:not([data-type=""])',   // non-empty plugin type only
+      '.pk-mermaid',                                           // possible future class
+      '[data-node-type="open_iframe"]',                        // possible data attribute
+    ].join(', '),
+    kind: 'IFrame',
+    label: 'Mermaid 图表',
+  },
 ];
 
 function getRulesForHost(hostname: string): NodeRule[] {
   return RULES.filter((r) => r.match === '*' || hostname.includes(r.match));
+}
+
+/**
+ * Try to extract the raw HTML source from a Citadel pk-html block.
+ * The content is passed to the iframe via postMessage; the original string lives
+ * in the React fiber of the ProseMirror node component.
+ *
+ * Content scripts share the DOM with the page (React fiber is a DOM property),
+ * but it may be non-enumerable — use Object.getOwnPropertyNames, not Object.keys.
+ */
+function extractHtmlSource(container: Element): string | null {
+  // Primary: data attribute written by the main-world injected script in findAndPrepare.
+  // This is the most reliable path since main-world JS can access React fiber.
+  const encoded = container.getAttribute('data-affine-html-content');
+  if (encoded) {
+    container.removeAttribute('data-affine-html-content');
+    const src = decodeURIComponent(encoded);
+    console.log(`[affine-clipper] extractHtmlSource: found via main-world script, len=${src.length}`);
+    return src;
+  }
+
+  // Fallback: isolated-world fiber access (may not work in Chrome; kept for other browsers).
+  // React 16–18: fiber stored as __reactFiber$HASH or __reactInternalInstance$HASH
+  try {
+    const fiberKey = Object.getOwnPropertyNames(container).find(
+      k => k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance'),
+    );
+    if (fiberKey) {
+      let fiber: any = (container as any)[fiberKey];
+      for (let depth = 0; depth < 80 && fiber; depth++) {
+        const props = fiber.memoizedProps;
+        if (props) {
+          // ProseMirror node attrs: the HTML source may be in node.attrs.html / node.content
+          const node = props.node;
+          if (node) {
+            const src =
+              node.attrs?.html ?? node.attrs?.content ?? node.attrs?.htmlContent ??
+              (node.textContent && node.textContent.length > 20 ? node.textContent : null);
+            if (typeof src === 'string' && src.includes('<')) {
+              console.log(`[affine-clipper] extractHtmlSource: found via node.attrs depth=${depth} len=${src.length}`);
+              return src;
+            }
+          }
+          // Direct prop names used by Citadel/Quark HTML block component
+          for (const key of ['html', 'htmlContent', 'content', 'initialHtml', 'src']) {
+            const v = props[key];
+            if (typeof v === 'string' && v.length > 20 && v.includes('<')) {
+              console.log(`[affine-clipper] extractHtmlSource: found via props.${key} depth=${depth} len=${v.length}`);
+              return v;
+            }
+          }
+        }
+        fiber = fiber.return;
+      }
+    }
+  } catch (err) {
+    console.warn('[affine-clipper] extractHtmlSource fiber error:', err);
+  }
+  console.warn('[affine-clipper] extractHtmlSource: could not find HTML source in React fiber');
+  return null;
 }
 
 export function findAndPrepare(
@@ -53,8 +138,53 @@ export function findAndPrepare(
   for (const rule of rules) {
     doc.querySelectorAll(rule.selector).forEach((el) => {
       if (!seen.has(el)) {
-        seen.add(el);
-        found.push({ element: el, rule });
+        // Don't add this element if it wraps something already in `seen`.
+        // Example: a ct-node-view-dom wrapper around .pk-html must not shadow
+        // the HtmlBlock job that was already created for the inner .pk-html.
+        const wrapsSeenEl = Array.from(seen).some(s => el.contains(s));
+        if (!wrapsSeenEl) {
+          seen.add(el);
+          found.push({ element: el, rule });
+        }
+      }
+    });
+  }
+
+  // km.sankuai.com: detect Citadel iframe blocks (Mermaid :::open_iframe, HTML :::html).
+  // CSS :has() selectors are unreliable when the <iframe> is a grandchild (not a direct
+  // child).  Instead, find all iframes and walk up to the nearest [data-node-id] ancestor
+  // (max 6 levels), which is the Citadel block root for the embed.
+  if (hostname.includes('km.sankuai.com')) {
+    doc.querySelectorAll<HTMLIFrameElement>('iframe').forEach((iframe) => {
+      // Skip DrawIO-related iframes (those are handled separately).
+      const iframeSrc = iframe.getAttribute('src') ?? '';
+      if (iframeSrc.includes('contentType=0') || iframeSrc.includes('/api/file/cdn/')) return;
+
+      // Walk up from the iframe to find the Citadel block container.
+      // Stop at: [data-node-id] (generic Citadel block) OR known embed container classes.
+      let container: Element | null = iframe.parentElement;
+      for (let depth = 0; depth < 6 && container; depth++) {
+        const cls = container.getAttribute('class') ?? '';
+        const isHtmlBlock = cls.includes('pk-html');
+        const isMermaid = cls.includes('pk-mermaid');
+        if (container.hasAttribute('data-node-id') || isHtmlBlock || isMermaid) {
+          if (!seen.has(container)) {
+            // Skip if this container WRAPS an already-matched element (e.g. a parent div with
+            // data-node-id that contains a .pk-html already added as HtmlBlock).  Adding the
+            // parent would create a second job whose replaceWith() overwrites the first job's
+            // carefully-placed <pre> with a broken affine-img:// placeholder.
+            const containsSeenEl = Array.from(seen).some(el => container!.contains(el));
+            if (!containsSeenEl) {
+              seen.add(container);
+              const kind = isHtmlBlock ? 'HtmlBlock' : 'IFrame';
+              const label = isHtmlBlock ? 'HTML 块' : 'Mermaid 图表';
+              found.push({ element: container, rule: { match: 'km.sankuai.com', selector: '', kind, label } });
+              console.log(`[affine-clipper] iframe embed found: depth=${depth} kind="${kind}" src="${iframeSrc.substring(0, 60)}" container.class="${cls.substring(0, 60)}"`);
+            }
+          }
+          break;
+        }
+        container = container.parentElement;
       }
     });
   }
@@ -138,6 +268,29 @@ export function findAndPrepare(
       }
     });
     console.groupEnd();
+
+    // Code block structure (to verify data-language attribute presence)
+    console.group('PRE elements (code blocks):');
+    document.querySelectorAll('pre').forEach((pre, i) => {
+      if (i > 10) return;
+      const lang = pre.getAttribute('data-language') ?? pre.getAttribute('data-lang') ?? '';
+      const cls = (pre.getAttribute('class') ?? '').substring(0, 60);
+      const hasCode = !!pre.querySelector('code');
+      console.log(`  pre[${i}] data-language="${lang}" class="${cls}" hasCodeChild=${hasCode} textLen=${(pre.textContent ?? '').length}`);
+    });
+    console.groupEnd();
+
+    // Iframe elements (for Mermaid open_iframe / HTML blocks)
+    console.group('IFRAME elements inside .ProseMirror:');
+    const proseMirrorEl = document.querySelector('.ProseMirror');
+    (proseMirrorEl ?? document).querySelectorAll('iframe').forEach((f, i) => {
+      const parent = f.parentElement;
+      console.log(`  iframe[${i}] src="${(f.src ?? '').substring(0, 60)}" srcdoc=${f.hasAttribute('srcdoc')} ` +
+        `parent.data-node-type="${parent?.getAttribute('data-node-type') ?? ''}" ` +
+        `parent.class="${(parent?.getAttribute('class') ?? '').substring(0, 50)}"`);
+    });
+    console.groupEnd();
+
     console.groupEnd();
   }
 
@@ -160,6 +313,26 @@ export function findAndPrepare(
     if (idx === -1) continue;
     const cloneEl = allClone[idx];
     if (!cloneEl) continue;
+
+    // HTML blocks: extract raw HTML via React fiber and insert as a fenced code block.
+    // This lets AFFiNE import the HTML code directly rather than showing an image.
+    if (job.info.kind === 'HtmlBlock') {
+      const htmlSource = extractHtmlSource(job.element);
+      if (htmlSource) {
+        const pre = modifiedClone.createElement('pre');
+        pre.setAttribute('data-language', 'html');
+        pre.textContent = htmlSource;
+        cloneEl.replaceWith(pre);
+        continue;
+      }
+      // React fiber extraction failed: remove the container so its loading-state
+      // text ("Mermaid（内测）服务加载中..." etc.) doesn't leak into the output.
+      // No image fallback — AFFiNE supports HTML content natively, so a broken
+      // image placeholder would be worse than nothing.
+      cloneEl.remove();
+      continue;
+    }
+
     const placeholder = modifiedClone.createElement('img');
     placeholder.setAttribute('src', `affine-img://${job.id}`);
     placeholder.setAttribute('alt', job.info.label);
@@ -169,13 +342,6 @@ export function findAndPrepare(
   return { modifiedClone, jobs };
 }
 
-async function waitForRender(el: Element, retries = 3): Promise<boolean> {
-  for (let i = 0; i < retries; i++) {
-    if ((el as HTMLElement).offsetHeight > 0) return true;
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  return false;
-}
 
 /** Convert a Blob to a base-64 data URI. */
 function blobToDataUri(blob: Blob): Promise<string> {
@@ -185,6 +351,18 @@ function blobToDataUri(blob: Blob): Promise<string> {
     reader.onerror = reject;
     reader.readAsDataURL(blob);
   });
+}
+
+/**
+ * Convert a PlantUML image URL to its SVG variant.
+ * KM/Citadel serves PlantUML diagrams at .../plantuml/{format}/{encoded}
+ * where format can be png, jpg, txt, etc.  Replacing the format segment with
+ * "svg" gives a lossless, full-quality SVG at the same encoded content.
+ * Returns the original URL unchanged if it doesn't match the pattern.
+ */
+export function toPlantUmlSvgUrl(src: string): string {
+  // Match: .../plantuml/<format>/<encoded>  (format = anything except '/')
+  return src.replace(/\/plantuml\/[^/]+\//, '/plantuml/svg/');
 }
 
 /**
@@ -224,15 +402,174 @@ async function captureAuthSvgImg(el: Element): Promise<string | null> {
   }
 }
 
+/**
+ * Wait for an iframe to finish loading (max 3 s), then attempt to access its
+ * same-origin contentDocument.  Returns the document or null.
+ */
+async function getIframeDoc(iframe: HTMLIFrameElement): Promise<Document | null> {
+  if (!iframe.contentDocument || iframe.contentDocument.readyState !== 'complete') {
+    await new Promise<void>(resolve => {
+      const onLoad = () => resolve();
+      iframe.addEventListener('load', onLoad, { once: true });
+      setTimeout(resolve, 5000);
+    });
+  }
+  try { return iframe.contentDocument ?? null; } catch { return null; }
+}
+
+/**
+ * Capture a Citadel Mermaid diagram by loading its same-origin preview URL in a
+ * hidden off-screen iframe, waiting for mermaid.js to render the SVG, then
+ * serialising the SVG to a data URI.
+ *
+ * URL pattern: https://km.sankuai.com/block/mermaid/{attachmentId}?openMode=preview&...
+ * The page is same-origin so iframe.contentDocument is accessible.
+ */
+async function captureMermaidBlock(attachmentId: string): Promise<string | null> {
+  const hostname = location.hostname;
+  const url =
+    `https://${hostname}/block/mermaid/${attachmentId}` +
+    `?openMode=preview&openEmbed=citadel&openPlatform=pc&openCanAddDiscussion=0&lang=zh&isFirstLoad=1`;
+
+  const iframe = document.createElement('iframe');
+  iframe.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:800px;height:600px;visibility:hidden;';
+  iframe.src = url;
+  document.body.appendChild(iframe);
+  console.log(`[affine-clipper] captureMermaidBlock: loading ${url.substring(0, 80)}`);
+
+  try {
+    const doc = await getIframeDoc(iframe);
+    if (!doc) {
+      console.warn('[affine-clipper] captureMermaidBlock: could not access iframe document');
+      return null;
+    }
+
+    // Mermaid.js renders asynchronously — poll up to 10 s (20 × 500 ms) for the SVG.
+    let svg: Element | null = null;
+    for (let i = 0; i < 20 && !svg; i++) {
+      svg = doc.querySelector('svg');
+      if (!svg) await new Promise(r => setTimeout(r, 500));
+    }
+
+    if (!svg) {
+      console.warn('[affine-clipper] captureMermaidBlock: SVG not found after 10 s');
+      return null;
+    }
+
+    const svgText = new XMLSerializer().serializeToString(svg);
+    const b64 = btoa(unescape(encodeURIComponent(svgText)));
+    console.log(`[affine-clipper] captureMermaidBlock: captured SVG ${svgText.length} chars`);
+    return `data:image/svg+xml;base64,${b64}`;
+  } finally {
+    iframe.remove();
+  }
+}
+
+/**
+ * Capture the visual content of a container that holds a same-origin <iframe>
+ * (Citadel open_iframe / html blocks).  Strategy:
+ *  1. Extract SVG from iframe.contentDocument (good for Mermaid → lossless).
+ *  2. html2canvas on iframe.contentDocument.body (good for HTML blocks).
+ * Returns a data URI or null.
+ */
+async function captureIframeContainer(container: Element): Promise<string | null> {
+  const iframe = container.querySelector('iframe') as HTMLIFrameElement | null;
+  if (!iframe) return null;
+  console.log(`[affine-clipper] captureIframeContainer: found iframe src="${iframe.src?.substring(0, 60)}" srcdoc=${iframe.hasAttribute('srcdoc')}`);
+
+  const doc = await getIframeDoc(iframe);
+  if (!doc) {
+    console.warn('[affine-clipper] captureIframeContainer: could not access iframe document');
+    return null;
+  }
+
+  // Strategy 1: serialize SVG if present (Mermaid renders as <svg>).
+  // Mermaid rendering is async: the iframe loads first, then JS runs to produce
+  // the SVG.  Poll up to 5 s (10 × 500 ms) to allow the diagram to appear.
+  let svg: Element | null = null;
+  for (let attempt = 0; attempt < 10 && !svg; attempt++) {
+    svg = doc.querySelector('svg');
+    if (!svg) await new Promise(r => setTimeout(r, 500));
+  }
+  if (svg) {
+    try {
+      const svgText = new XMLSerializer().serializeToString(svg);
+      const b64 = btoa(unescape(encodeURIComponent(svgText)));
+      console.log(`[affine-clipper] captureIframeContainer: captured SVG (${svgText.length}B)`);
+      return `data:image/svg+xml;base64,${b64}`;
+    } catch (err) {
+      console.warn('[affine-clipper] captureIframeContainer SVG serialize error:', err);
+    }
+  }
+
+  // No SVG found and html2canvas has been removed (it doesn't work reliably for
+  // cross-origin iframes and added ~150 KiB to the bundle).  Return null so the
+  // caller can fall through to the next strategy or skip.
+  console.warn('[affine-clipper] captureIframeContainer: no SVG found in iframe');
+  return null;
+}
+
 export async function captureAll(jobs: CaptureJob[]): Promise<Map<string, string>> {
   const results = new Map<string, string>();
 
   for (const job of jobs) {
     try {
-      const ready = await waitForRender(job.element);
-      if (!ready) {
-        console.warn(`[affine-clipper] Skipping ${job.id}: element has no height after retries`);
+      // HtmlBlock: handled entirely in findAndPrepare (either converted to a fenced
+      // html code block via React fiber extraction, or the container was removed).
+      // Nothing to capture here — the iframe is cross-origin (onejs.meituan.net).
+      if (job.info.kind === 'HtmlBlock') {
+        console.log(`[affine-clipper] HtmlBlock ${job.id}: skipping capture (handled in findAndPrepare)`);
         continue;
+      }
+
+      // Citadel IFrame (Mermaid): try same-origin hidden-iframe approach first.
+      if (job.info.kind === 'IFrame') {
+        // Primary: captureMermaidBlock — loads km.sankuai.com/block/mermaid/{id} in a
+        // hidden iframe and waits for mermaid.js to render the SVG.
+        const attachmentId = job.element.getAttribute('data-affine-mermaid-id') ?? '';
+        if (attachmentId) {
+          const dataUri = await captureMermaidBlock(attachmentId);
+          if (dataUri) { results.set(job.id, dataUri); continue; }
+        }
+        // Fallback: try to access any iframe already inside the container.
+        const dataUri = await captureIframeContainer(job.element);
+        if (dataUri) {
+          results.set(job.id, dataUri);
+          continue;
+        }
+        console.warn(`[affine-clipper] Skipping ${job.id} (${job.info.kind}): Mermaid capture failed`);
+        continue;
+      }
+
+      // DrawIO / PlantUML images are fetched via HTTP — no need to wait for DOM
+      // rendering. Virtual scrolling often removes these from the DOM after detection,
+      // and direct URL fetch gives the full-resolution SVG.
+      if ((job.info.kind === 'DrawIO' || job.info.kind === 'PlantUML') && job.element.tagName === 'IMG') {
+        // For PlantUML: prefer the SVG variant (lossless, full quality) by rewriting
+        // the format segment in the URL before fetching.
+        if (job.info.kind === 'PlantUML') {
+          const img = job.element as HTMLImageElement;
+          const rawSrc = img.src || img.dataset.src || img.getAttribute('data-src') || '';
+          const svgSrc = toPlantUmlSvgUrl(rawSrc);
+          if (svgSrc !== rawSrc) {
+            try {
+              const res = await fetch(svgSrc, { credentials: 'include' });
+              if (res.ok) {
+                const blob = await res.blob();
+                results.set(job.id, await blobToDataUri(blob));
+                console.log(`[affine-clipper] PlantUML SVG captured (${blob.size}B)`);
+                continue;
+              }
+            } catch (_) { /* fall through to PNG fetch below */ }
+          }
+        }
+
+        const dataUri = await captureAuthSvgImg(job.element);
+        if (dataUri) {
+          results.set(job.id, dataUri);
+          continue;
+        }
+        // Fall through to SVG serialisation if fetch failed
       }
 
       // Inline <svg> element (e.g. Citadel DrawIO rendered as inline SVG):
@@ -249,22 +586,10 @@ export async function captureAll(jobs: CaptureJob[]): Promise<Map<string, string
         }
       }
 
-      // DrawIO images on km.sankuai.com are SVGs served via authenticated CDN URLs.
-      // Fetch them directly instead of using html2canvas (which would taint the canvas).
-      if (job.info.kind === 'DrawIO' && job.element.tagName === 'IMG') {
-        const dataUri = await captureAuthSvgImg(job.element);
-        if (dataUri) {
-          results.set(job.id, dataUri);
-          continue;
-        }
-        // Fall through to html2canvas if fetch failed
-      }
-
-      const canvas = await html2canvas(job.element as HTMLElement, {
-        useCORS: true,
-        scale: window.devicePixelRatio,
-      });
-      results.set(job.id, canvas.toDataURL('image/png'));
+      // No other capture strategy available — skip.
+      // html2canvas has been removed (added ~150 KiB; RULES selectors target SVG/IMG/IFrame
+      // which are all handled before this point).
+      console.warn(`[affine-clipper] Skipping ${job.id} (${job.info.kind}): no capture strategy matched`);
     } catch (err) {
       console.warn(`[affine-clipper] Failed to capture ${job.id}:`, err);
     }
@@ -280,9 +605,8 @@ export function substituteImages(markdown: string, images: Map<string, string>):
       if (!match) return line;
       const id = match[1];
       const dataUri = images.get(id);
-      if (!dataUri) return null; // will be filtered out
+      if (!dataUri) return line; // keep placeholder so position is not lost
       return line.replace(`affine-img://${id}`, dataUri);
     })
-    .filter((line): line is string => line !== null)
     .join('\n');
 }

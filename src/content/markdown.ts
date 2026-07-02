@@ -23,6 +23,21 @@ td.addRule('underline', {
   replacement: (content: string) => (content ? `<u>${content}</u>` : ''),
 });
 
+// ── Citadel code blocks ────────────────────────────────────────────────────
+// Citadel ProseMirror renders code_block as <pre data-language="SQL">.
+// Turndown's built-in fenced-code rule requires a <code> child (isFenced),
+// so a bare <pre data-language="..."> falls through to plain text.
+// This rule catches both patterns: with or without a <code> child.
+td.addRule('citadel-code', {
+  filter: (node: HTMLElement) => node.nodeName === 'PRE' && node.hasAttribute('data-language'),
+  replacement: (_content: string, node: HTMLElement) => {
+    const lang = (node.getAttribute('data-language') ?? '').toLowerCase();
+    const codeEl = node.querySelector('code');
+    const code = (codeEl?.textContent ?? node.textContent ?? '').trimEnd();
+    return `\n\n\`\`\`${lang}\n${code}\n\`\`\`\n\n`;
+  },
+});
+
 // ── Bold: always use HTML <b> tags instead of **...**  ────────────────────
 // GFM **..** fails when bold content starts/ends with Unicode punctuation
 // (e.g. curly quotes "text"): CommonMark left-flanking delimiter rules
@@ -44,6 +59,22 @@ td.addRule('css-bold', {
   replacement: (content: string) => (content.trim() ? `<b>${content.trim()}</b>` : ''),
 });
 
+// ── Blockquote / Callout replacement helper ────────────────────────────────
+// AFFiNE's Markdown importer cannot handle `> - item` (list items inside a
+// blockquote).  When the content contains list items, output it as-is so
+// AFFiNE imports each item as a proper list block.  When there are no list
+// items, keep the standard `> ` prefix so the quote formatting is preserved.
+function blockquoteReplacement(content: string): string {
+  const trimmed = content.trim();
+  // Detect any Markdown list line: "- ", "* ", "+ ", or "1. " etc.
+  const hasListItems = /^[ \t]*(?:[-*+]|\d+\.)\s/m.test(trimmed);
+  if (hasListItems) {
+    return '\n\n' + trimmed + '\n\n';
+  }
+  const lines = trimmed.split('\n').map(l => `> ${l}`).join('\n');
+  return '\n\n' + lines + '\n\n';
+}
+
 // ── Callout / Note blocks (Citadel :::note{type=info}:::) ─────────────────
 // Citadel renders note/callout blocks as a div whose class or data attributes
 // indicate a "note", "callout", "tip", "warning", "info", or "alert" role.
@@ -51,16 +82,35 @@ td.addRule('css-bold', {
 td.addRule('callout', {
   filter: (node: HTMLElement) => {
     if (!['DIV', 'SECTION', 'ASIDE'].includes(node.nodeName)) return false;
+    // data-was-blockquote is set by extractor.ts preprocessing on Citadel <blockquote>
+    // elements that were converted to <section> to survive Readability's cleanup pass.
+    if (node.getAttribute('data-was-blockquote') === '1') return true;
     const cls = (node.getAttribute('class') ?? '').toLowerCase();
     const dataType = (node.getAttribute('data-type') ?? node.getAttribute('data-node-type') ?? '').toLowerCase();
     const role = (node.getAttribute('role') ?? '').toLowerCase();
-    const keywords = ['note', 'callout', 'tip', 'warning', 'info', 'alert', 'notice', 'hint', 'quark'];
-    return keywords.some(k => cls.includes(k) || dataType.includes(k) || role.includes(k));
+    const keywords = ['note', 'callout', 'tip', 'warning', 'info', 'alert', 'notice', 'hint', 'quark', 'quote', 'blockquote'];
+    // Avoid false positives on inner structural containers such as 'pk-note-wrapper',
+    // 'ct-note-title', 'ct-note-content', 'pk-note-icon'.  These share the same 'note'
+    // substring but are child layout divs, not the outer callout/note block.
+    // Strategy: per class-token, skip tokens that end with a known structural suffix.
+    const STRUCTURAL = ['wrapper', 'title', 'content', 'icon', 'body', 'header', 'footer', 'inner', 'outer'];
+    const classTokens = cls.split(/\s+/);
+    const classMatch = classTokens.some(token => {
+      if (STRUCTURAL.some(s => token === s || token.endsWith('-' + s))) return false;
+      return keywords.some(k => token.includes(k));
+    });
+    const dataTypeMatch = keywords.some(k => dataType.includes(k));
+    const roleMatch = keywords.some(k => role.includes(k));
+    return classMatch || dataTypeMatch || roleMatch;
   },
-  replacement: (content: string) => {
-    const lines = content.trim().split('\n').map(l => `> ${l}`).join('\n');
-    return '\n\n' + lines + '\n\n';
-  },
+  replacement: (content: string) => blockquoteReplacement(content),
+});
+
+// ── Native <blockquote> elements ─────────────────────────────────────────────
+// Same logic as the callout rule: use > only when there are no list items inside.
+td.addRule('blockquote-flat', {
+  filter: 'blockquote',
+  replacement: (content: string) => blockquoteReplacement(content),
 });
 
 // ── Collapsible / expand blocks (<details>/<summary>) ─────────────────────
@@ -89,12 +139,11 @@ td.addRule('all-tables', {
     // - Paragraph boundaries (\n\n) → single <br>  (no extra blank line)
     // - Inline newlines  (\n)       → space
     const cellMd = (cell: HTMLTableCellElement): string => {
-      const raw = td.turndown(cell.innerHTML);
+      const raw = td.turndown(cell.innerHTML).trim(); // trim \n before <br> conversion
       return raw
         .replace(/\n{2,}/g, '\n')  // collapse multiple newlines → single \n
         .replace(/\n/g, '<br>')     // every newline → <br> (no blank lines)
-        .replace(/\|/g, '\\|')
-        .trim();
+        .replace(/\|/g, '\\|');
     };
 
     // Determine column count (colspan-expanded) from the first row.
@@ -138,11 +187,15 @@ td.addRule('all-tables', {
   },
 });
 
-// ── Preserve affine-img:// URIs ────────────────────────────────────────────
+// ── Preserve affine-img:// and affine-drawio:// placeholder URIs ───────────
+// affine-img://node-N  → placed by findAndPrepare (visible DrawIO)
+// affine-drawio://N    → placed by injectDrawioPlaceholders (virtual-scroll DrawIO)
 td.addRule('affine-img', {
-  filter: (node: HTMLElement) =>
-    node.nodeName === 'IMG' &&
-    (node as HTMLImageElement).getAttribute('src')?.startsWith('affine-img://') === true,
+  filter: (node: HTMLElement) => {
+    const src = (node as HTMLImageElement).getAttribute('src') ?? '';
+    return node.nodeName === 'IMG' &&
+      (src.startsWith('affine-img://') || src.startsWith('affine-drawio://'));
+  },
   replacement: (_content: string, node: HTMLElement) => {
     const img = node as HTMLImageElement;
     return `![${img.getAttribute('alt') ?? ''}](${img.getAttribute('src') ?? ''})`;
