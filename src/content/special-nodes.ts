@@ -524,20 +524,32 @@ export async function captureAll(jobs: CaptureJob[]): Promise<Map<string, string
 
       // Citadel IFrame (Mermaid): try same-origin hidden-iframe approach first.
       if (job.info.kind === 'IFrame') {
-        // Primary: captureMermaidBlock — loads km.sankuai.com/block/mermaid/{id} in a
-        // hidden iframe and waits for mermaid.js to render the SVG.
-        const attachmentId = job.element.getAttribute('data-affine-mermaid-id') ?? '';
+        // Primary: captureMermaidBlock via attachmentId from main-world background script.
+        let attachmentId = job.element.getAttribute('data-affine-mermaid-id') ?? '';
+        console.log(`[affine-clipper] IFrame ${job.id}: data-affine-mermaid-id="${attachmentId}"`);
+
+        // Fallback A: scan existing iframes inside the container for a Mermaid URL.
+        // Citadel may have already created the iframe (e.g. if block was visible on screen).
+        if (!attachmentId) {
+          const existingIframe = job.element.querySelector<HTMLIFrameElement>('iframe[src*="/block/mermaid/"]');
+          if (existingIframe?.src) {
+            const m = existingIframe.src.match(/\/block\/mermaid\/(\d+)/);
+            if (m) { attachmentId = m[1]; console.log(`[affine-clipper] IFrame ${job.id}: found existing Mermaid iframe, id=${attachmentId}`); }
+          }
+        }
+
         if (attachmentId) {
           const dataUri = await captureMermaidBlock(attachmentId);
           if (dataUri) { results.set(job.id, dataUri); continue; }
         }
-        // Fallback: try to access any iframe already inside the container.
+
+        // Fallback B: generic iframe content access (SVG extraction from same-origin iframe).
         const dataUri = await captureIframeContainer(job.element);
         if (dataUri) {
           results.set(job.id, dataUri);
           continue;
         }
-        console.warn(`[affine-clipper] Skipping ${job.id} (${job.info.kind}): Mermaid capture failed`);
+        console.warn(`[affine-clipper] Skipping ${job.id} (${job.info.kind}): Mermaid capture failed (attachmentId="${attachmentId}")`);
         continue;
       }
 

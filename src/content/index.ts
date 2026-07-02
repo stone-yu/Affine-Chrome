@@ -267,7 +267,7 @@ async function fetchMainWorldData(): Promise<MainWorldData> {
           return;
         }
         const d = response?.data as MainWorldData | null;
-        console.log(`[affine-clipper] main-world data: codeBlocks=${d?.codeBlocks?.length ?? 0} htmlBlocks=${d?.htmlBlocks?.length ?? 0}`);
+        console.log(`[affine-clipper] main-world data: codeBlocks=${d?.codeBlocks?.length ?? 0} htmlBlocks=${d?.htmlBlocks?.length ?? 0} mermaidBlocks=${d?.mermaidBlocks?.length ?? 0}`);
         resolve(d ?? empty);
       });
     } catch (err) {
