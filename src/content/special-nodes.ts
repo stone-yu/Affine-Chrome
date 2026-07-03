@@ -425,6 +425,21 @@ async function getIframeDoc(iframe: HTMLIFrameElement): Promise<Document | null>
  * URL pattern: https://km.sankuai.com/block/mermaid/{attachmentId}?openMode=preview&...
  * The page is same-origin so iframe.contentDocument is accessible.
  */
+/**
+ * Return true if the SVG looks like an actual diagram rather than a UI icon.
+ * Mermaid diagrams are large; UI icons are tiny (e.g. Lucide circle-help at 16×16).
+ */
+function isDiagramSvg(s: Element): boolean {
+  const w = parseFloat(s.getAttribute('width') ?? '0');
+  const h = parseFloat(s.getAttribute('height') ?? '0');
+  // Explicit small size (both dims ≤ 50) → definitely an icon
+  if (w > 0 && w <= 50 && h > 0 && h <= 50) return false;
+  // Class contains icon-related terms
+  const cls = (s.getAttribute('class') ?? '').toLowerCase();
+  if (/lucide|iconfont|icon|spinner|loading/.test(cls)) return false;
+  return true;
+}
+
 /** Extract SVG from an iframe.contentDocument (polls up to maxMs). */
 async function extractSvgFromIframe(iframe: HTMLIFrameElement, maxMs = 5000): Promise<string | null> {
   const doc = await getIframeDoc(iframe);
@@ -432,10 +447,18 @@ async function extractSvgFromIframe(iframe: HTMLIFrameElement, maxMs = 5000): Pr
   const polls = Math.ceil(maxMs / 500);
   let svg: Element | null = null;
   for (let i = 0; i < polls && !svg; i++) {
-    svg = doc.querySelector('svg');
+    // Skip tiny UI icons; look for the actual diagram SVG.
+    const candidates = Array.from(doc.querySelectorAll('svg')).filter(isDiagramSvg);
+    svg = candidates[0] ?? null;
     if (!svg) await new Promise(r => setTimeout(r, 500));
   }
-  if (!svg) return null;
+  if (!svg) {
+    // Log the SVGs we found (if any) for diagnostics
+    const allSvgs = Array.from(doc.querySelectorAll('svg'));
+    console.warn(`[affine-clipper] extractSvgFromIframe: no diagram SVG found (${allSvgs.length} total SVGs, sizes: ${allSvgs.map(s => `${s.getAttribute('width')}×${s.getAttribute('height')} cls=${s.getAttribute('class')?.substring(0, 30)}`).join('; ')})`);
+    return null;
+  }
+  console.log(`[affine-clipper] extractSvgFromIframe: found diagram SVG ${svg.getAttribute('width')}×${svg.getAttribute('height')}`);
   try {
     const svgText = new XMLSerializer().serializeToString(svg);
     const b64 = btoa(unescape(encodeURIComponent(svgText)));
@@ -469,7 +492,7 @@ async function captureMermaidBlock(attachmentId: string): Promise<string | null>
 
   if (existingIframe) {
     console.log(`[affine-clipper] captureMermaidBlock: trying existing iframe src="${existingIframe.src.substring(0, 80)}"`);
-    const dataUri = await extractSvgFromIframe(existingIframe, 5000);
+    const dataUri = await extractSvgFromIframe(existingIframe, 10000);
     if (dataUri) {
       console.log(`[affine-clipper] captureMermaidBlock: captured from existing iframe`);
       return dataUri;
