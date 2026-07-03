@@ -500,36 +500,51 @@ async function performExtraction(): Promise<ExtractResult | ExtractError> {
       console.log(`[affine-clipper] mermaid blocks annotated (bg): ${mainWorldData.mermaidBlocks.length}`);
     }
 
-    // DOM-based Mermaid discovery: scroll each ct-node-view-dom into view so Citadel
-    // mounts the lazy iframe, then read its src to extract the attachmentId.
-    // This is a fallback when the background script can't find the ProseMirror state.
+    // DOM-based Mermaid discovery: read data-attachment-id directly from the element
+    // (Citadel sets this attribute: <div class="ct-node-view-dom" data-attachment-id="...">)
+    // or fall back to reading the already-created iframe's src URL.
     if (hostname.includes('km.sankuai.com')) {
       const mermaidContainers = Array.from(document.querySelectorAll<HTMLElement>(
         'div.ct-node-view-dom[data-type]:not([data-type=""])',
       )).filter(el => !el.getAttribute('data-affine-mermaid-id'));
 
-      if (mermaidContainers.length > 0) {
-        const originalScrollY = window.scrollY;
-        for (const container of mermaidContainers) {
-          // Scroll into view to trigger lazy iframe creation
-          container.scrollIntoView({ behavior: 'instant', block: 'center' });
-          await new Promise(r => setTimeout(r, 1000));
-
-          // Check if the Mermaid iframe has been created
-          const iframe = container.querySelector<HTMLIFrameElement>('iframe[src*="/block/mermaid/"]');
-          if (iframe?.src) {
-            const m = iframe.src.match(/\/block\/mermaid\/(\d+)/);
-            if (m) {
-              container.setAttribute('data-affine-mermaid-id', m[1]);
-              console.log(`[affine-clipper] mermaid annotated (DOM scroll): id=${m[1]}`);
-            }
-          } else {
-            console.warn(`[affine-clipper] mermaid: no iframe found after scroll, container class="${container.getAttribute('class')}"`);
+      let scrollNeeded = false;
+      for (const container of mermaidContainers) {
+        // Priority 1: data-attachment-id directly on the element (most reliable)
+        const directId = container.getAttribute('data-attachment-id');
+        if (directId) {
+          container.setAttribute('data-affine-mermaid-id', directId);
+          console.log(`[affine-clipper] mermaid annotated (data-attachment-id): id=${directId}`);
+          continue;
+        }
+        // Priority 2: existing iframe src already in DOM
+        const iframe = container.querySelector<HTMLIFrameElement>('iframe[src*="/block/mermaid/"]');
+        if (iframe?.src) {
+          const m = iframe.src.match(/\/block\/mermaid\/(\d+)/);
+          if (m) {
+            container.setAttribute('data-affine-mermaid-id', m[1]);
+            console.log(`[affine-clipper] mermaid annotated (iframe src): id=${m[1]}`);
+            continue;
           }
         }
-        // Restore scroll position
-        window.scrollTo({ top: originalScrollY, behavior: 'instant' });
+        // Priority 3: scroll into view to trigger lazy iframe creation
+        scrollNeeded = true;
+        container.scrollIntoView({ behavior: 'instant', block: 'center' });
+        await new Promise(r => setTimeout(r, 1000));
+        const lazyIframe = container.querySelector<HTMLIFrameElement>('iframe[src*="/block/mermaid/"]');
+        if (lazyIframe?.src) {
+          const m = lazyIframe.src.match(/\/block\/mermaid\/(\d+)/);
+          if (m) {
+            container.setAttribute('data-affine-mermaid-id', m[1]);
+            console.log(`[affine-clipper] mermaid annotated (scroll trigger): id=${m[1]}`);
+          } else {
+            console.warn(`[affine-clipper] mermaid: iframe found but no id in src="${lazyIframe.src.substring(0, 80)}"`);
+          }
+        } else {
+          console.warn(`[affine-clipper] mermaid: no iframe after scroll, data-type="${container.getAttribute('data-type')}"`);
+        }
       }
+      if (scrollNeeded) window.scrollTo({ top: 0, behavior: 'instant' });
     }
 
     const { modifiedClone, jobs } = findAndPrepare(document);

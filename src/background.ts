@@ -129,10 +129,22 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
       }
 
-      // Strategy B (fallback): scan ct-node-view-dom elements via fiber BFS + attribute scan.
+      // Strategy B (fallback): scan ct-node-view-dom elements via direct attr + fiber BFS.
       if (mermaidBlocks.length === 0) {
         document.querySelectorAll('div.ct-node-view-dom[data-type]:not([data-type=""])').forEach(el => {
-          // B1: check all descendant attributes for Mermaid URL pattern
+          // B0: check the element's OWN data-attachment-id attribute (simplest and most reliable).
+          // HTML shows: <div class="ct-node-view-dom" data-attachment-id="244286845937" ...>
+          const directId = el.getAttribute('data-attachment-id');
+          if (directId && !seenIds.has(directId)) {
+            seenIds.add(directId);
+            mermaidBlocks.push({ attachmentId: directId });
+            return;
+          }
+          // B1: check all descendant attributes for Mermaid URL pattern (el itself not in querySelectorAll)
+          for (const attr of Array.from(el.attributes)) {         // also check el's own attrs
+            const m = attr.value.match(/\/block\/mermaid\/(\d+)/);
+            if (m && !seenIds.has(m[1])) { seenIds.add(m[1]); mermaidBlocks.push({ attachmentId: m[1] }); return; }
+          }
           for (const child of Array.from(el.querySelectorAll('*'))) {
             for (const attr of Array.from(child.attributes)) {
               const m = attr.value.match(/\/block\/mermaid\/(\d+)/);
