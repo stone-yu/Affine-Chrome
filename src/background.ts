@@ -87,72 +87,85 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       // Mermaid blocks: get attachmentId so content script can load the same-origin
       // km.sankuai.com/block/mermaid/{id} preview page and extract the SVG.
-      // Multiple strategies because the fiber depth / prop name varies by Citadel version.
       const mermaidBlocks: { attachmentId: string }[] = [];
+      const seenIds = new Set<string>();
 
-      function extractAttachmentId(el: Element): string {
-        // Strategy 1: look for an anchor/element whose href/src/data-* contains the Mermaid URL.
-        // Citadel embeds a "点击在新窗口打开" link inside the block.
-        for (const child of Array.from(el.querySelectorAll('a, [href], [data-url], [data-href]'))) {
-          for (const attr of Array.from(child.attributes)) {
-            const m = attr.value.match(/\/block\/mermaid\/(\d+)/);
-            if (m) return m[1];
+      // Strategy A (primary): traverse ProseMirror document state.
+      // The PM state has ALL nodes with their full attrs regardless of DOM visibility.
+      // Walk up from .ProseMirror element's fiber until we find a component whose props/state
+      // contain a ProseMirror state object (has state.doc with a descendants() method).
+      const pmEl = document.querySelector('.ProseMirror');
+      const pmFiberKey = pmEl
+        ? Object.getOwnPropertyNames(pmEl).find(k => k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance'))
+        : undefined;
+      if (pmEl && pmFiberKey) {
+        let fiber: any = (pmEl as any)[pmFiberKey];
+        for (let depth = 0; fiber && depth < 60; depth++, fiber = fiber.return) {
+          // Collect all values from props and hook states to search for a PM state
+          const candidates: any[] = [];
+          const props = fiber.memoizedProps;
+          if (props) candidates.push(...Object.values(props));
+          let hs = fiber.memoizedState;
+          for (let hd = 0; hs && hd < 15; hd++, hs = hs.next) {
+            if (hs.memoizedState != null) candidates.push(hs.memoizedState);
           }
-        }
-        // Strategy 2: scan ALL attributes of ALL descendants for the Mermaid URL pattern.
-        for (const child of Array.from(el.querySelectorAll('*'))) {
-          for (const attr of Array.from(child.attributes)) {
-            const m = attr.value.match(/\/block\/mermaid\/(\d+)/);
-            if (m) return m[1];
+          for (const c of candidates) {
+            if (!c || typeof c !== 'object') continue;
+            // PM state: has .doc.descendants (function)
+            const doc = c.doc ?? c.state?.doc ?? c.editorState?.doc;
+            if (typeof doc?.descendants === 'function') {
+              doc.descendants((node: any) => {
+                const id = node.attrs?.attachmentId;
+                if (id && !seenIds.has(String(id))) {
+                  seenIds.add(String(id));
+                  mermaidBlocks.push({ attachmentId: String(id) });
+                }
+              });
+              console.log(`[AFFiNE Clipper] PM doc traversal found ${mermaidBlocks.length} Mermaid blocks`);
+              break;
+            }
           }
+          if (mermaidBlocks.length > 0) break;
         }
-        // Strategy 3: React fiber — walk BOTH up (return) and down (child/sibling).
-        const k = Object.getOwnPropertyNames(el).find(
-          key => key.startsWith('__reactFiber') || key.startsWith('__reactInternalInstance'),
-        );
-        if (k) {
+      }
+
+      // Strategy B (fallback): scan ct-node-view-dom elements via fiber BFS + attribute scan.
+      if (mermaidBlocks.length === 0) {
+        document.querySelectorAll('div.ct-node-view-dom[data-type]:not([data-type=""])').forEach(el => {
+          // B1: check all descendant attributes for Mermaid URL pattern
+          for (const child of Array.from(el.querySelectorAll('*'))) {
+            for (const attr of Array.from(child.attributes)) {
+              const m = attr.value.match(/\/block\/mermaid\/(\d+)/);
+              if (m && !seenIds.has(m[1])) { seenIds.add(m[1]); mermaidBlocks.push({ attachmentId: m[1] }); return; }
+            }
+          }
+          // B2: React fiber BFS on the element itself
+          const k = Object.getOwnPropertyNames(el).find(key => key.startsWith('__reactFiber'));
+          if (!k) return;
           const visited = new Set<any>();
           const queue: any[] = [(el as any)[k]];
           while (queue.length > 0) {
             const f = queue.shift();
-            if (!f || visited.has(f)) continue;
+            if (!f || visited.has(f) || visited.size > 400) continue;
             visited.add(f);
-            // Check props
             for (const props of [f.memoizedProps, f.pendingProps]) {
               if (!props) continue;
-              const node = props.node;
-              if (node?.attrs?.attachmentId) return String(node.attrs.attachmentId);
-              if (props.attachmentId) return String(props.attachmentId);
-              // Scan props shallowly for any object with attachmentId
-              for (const v of Object.values(props)) {
-                if (v && typeof v === 'object' && (v as any).attachmentId) {
-                  return String((v as any).attachmentId);
-                }
-              }
+              const id = props.node?.attrs?.attachmentId ?? props.attachmentId;
+              if (id && !seenIds.has(String(id))) { seenIds.add(String(id)); mermaidBlocks.push({ attachmentId: String(id) }); return; }
             }
-            // Check hooks (memoizedState linked list)
-            let s = f.memoizedState;
-            for (let sd = 0; s && sd < 20; sd++, s = s.next) {
-              const v = s.memoizedState;
-              if (v?.node?.attrs?.attachmentId) return String(v.node.attrs.attachmentId);
-              if (v?.attachmentId) return String(v.attachmentId);
+            let hs = f.memoizedState;
+            for (let hd = 0; hs && hd < 10; hd++, hs = hs.next) {
+              const v = hs.memoizedState;
+              const id = v?.node?.attrs?.attachmentId ?? v?.attachmentId;
+              if (id && !seenIds.has(String(id))) { seenIds.add(String(id)); mermaidBlocks.push({ attachmentId: String(id) }); return; }
             }
-            // Explore neighbors (limit depth to avoid traversing entire tree)
-            if (visited.size < 300) {
-              if (f.child) queue.push(f.child);
-              if (f.sibling) queue.push(f.sibling);
-              if (f.return) queue.push(f.return);
-            }
+            if (f.child) queue.push(f.child);
+            if (f.sibling) queue.push(f.sibling);
+            if (f.return) queue.push(f.return);
           }
-        }
-        return '';
+        });
       }
-
-      document.querySelectorAll('div.ct-node-view-dom[data-type]:not([data-type=""])').forEach(el => {
-        const id = extractAttachmentId(el);
-        console.log(`[AFFiNE Clipper] Mermaid el class="${el.getAttribute('class')}" id="${id}"`);
-        if (id) mermaidBlocks.push({ attachmentId: id });
-      });
+      console.log(`[AFFiNE Clipper] mermaidBlocks extracted: ${mermaidBlocks.length}`);
 
       return { codeBlocks, htmlBlocks, mermaidBlocks };
     },
