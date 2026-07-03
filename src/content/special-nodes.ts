@@ -425,7 +425,45 @@ async function getIframeDoc(iframe: HTMLIFrameElement): Promise<Document | null>
  * URL pattern: https://km.sankuai.com/block/mermaid/{attachmentId}?openMode=preview&...
  * The page is same-origin so iframe.contentDocument is accessible.
  */
+/** Extract SVG from an iframe.contentDocument (polls up to maxMs). */
+async function extractSvgFromIframe(iframe: HTMLIFrameElement, maxMs = 5000): Promise<string | null> {
+  const doc = await getIframeDoc(iframe);
+  if (!doc) return null;
+  const polls = Math.ceil(maxMs / 500);
+  let svg: Element | null = null;
+  for (let i = 0; i < polls && !svg; i++) {
+    svg = doc.querySelector('svg');
+    if (!svg) await new Promise(r => setTimeout(r, 500));
+  }
+  if (!svg) return null;
+  try {
+    const svgText = new XMLSerializer().serializeToString(svg);
+    const b64 = btoa(unescape(encodeURIComponent(svgText)));
+    return `data:image/svg+xml;base64,${b64}`;
+  } catch { return null; }
+}
+
 async function captureMermaidBlock(attachmentId: string): Promise<string | null> {
+  // Strategy 1: use the EXISTING rendered Mermaid iframe on the page.
+  // The user can already see the diagram, so its iframe.contentDocument has the SVG.
+  // Re-query the live DOM (job.element may be detached if React re-rendered the component).
+  const liveContainer = document.querySelector<HTMLElement>(
+    `div.ct-node-view-dom[data-attachment-id="${attachmentId}"],` +
+    `div.ct-node-view-dom[data-affine-mermaid-id="${attachmentId}"]`,
+  );
+  const existingIframe = liveContainer?.querySelector<HTMLIFrameElement>('iframe');
+  if (existingIframe) {
+    console.log(`[affine-clipper] captureMermaidBlock: trying existing iframe src="${existingIframe.src.substring(0, 80)}"`);
+    const dataUri = await extractSvgFromIframe(existingIframe, 3000);
+    if (dataUri) {
+      console.log(`[affine-clipper] captureMermaidBlock: captured from existing iframe`);
+      return dataUri;
+    }
+    console.warn('[affine-clipper] captureMermaidBlock: no SVG in existing iframe, trying hidden iframe');
+  }
+
+  // Strategy 2: create a hidden same-origin iframe to render the Mermaid preview.
+  // The Mermaid preview page needs several seconds for mermaid.js to render the SVG.
   const hostname = location.hostname;
   const url =
     `https://${hostname}/block/mermaid/${attachmentId}` +
@@ -435,31 +473,16 @@ async function captureMermaidBlock(attachmentId: string): Promise<string | null>
   iframe.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:800px;height:600px;visibility:hidden;';
   iframe.src = url;
   document.body.appendChild(iframe);
-  console.log(`[affine-clipper] captureMermaidBlock: loading ${url.substring(0, 80)}`);
+  console.log(`[affine-clipper] captureMermaidBlock: loading hidden iframe ${url.substring(0, 80)}`);
 
   try {
-    const doc = await getIframeDoc(iframe);
-    if (!doc) {
-      console.warn('[affine-clipper] captureMermaidBlock: could not access iframe document');
-      return null;
+    const dataUri = await extractSvgFromIframe(iframe, 15000);  // 15 s for slow servers
+    if (dataUri) {
+      console.log(`[affine-clipper] captureMermaidBlock: captured from hidden iframe`);
+      return dataUri;
     }
-
-    // Mermaid.js renders asynchronously — poll up to 10 s (20 × 500 ms) for the SVG.
-    let svg: Element | null = null;
-    for (let i = 0; i < 20 && !svg; i++) {
-      svg = doc.querySelector('svg');
-      if (!svg) await new Promise(r => setTimeout(r, 500));
-    }
-
-    if (!svg) {
-      console.warn('[affine-clipper] captureMermaidBlock: SVG not found after 10 s');
-      return null;
-    }
-
-    const svgText = new XMLSerializer().serializeToString(svg);
-    const b64 = btoa(unescape(encodeURIComponent(svgText)));
-    console.log(`[affine-clipper] captureMermaidBlock: captured SVG ${svgText.length} chars`);
-    return `data:image/svg+xml;base64,${b64}`;
+    console.warn('[affine-clipper] captureMermaidBlock: SVG not found after 15 s');
+    return null;
   } finally {
     iframe.remove();
   }
