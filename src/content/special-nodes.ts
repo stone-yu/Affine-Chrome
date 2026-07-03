@@ -451,10 +451,25 @@ async function captureMermaidBlock(attachmentId: string): Promise<string | null>
     `div.ct-node-view-dom[data-attachment-id="${attachmentId}"],` +
     `div.ct-node-view-dom[data-affine-mermaid-id="${attachmentId}"]`,
   );
-  const existingIframe = liveContainer?.querySelector<HTMLIFrameElement>('iframe');
+  let existingIframe = liveContainer?.querySelector<HTMLIFrameElement>('iframe');
+  console.log(`[affine-clipper] captureMermaidBlock: liveContainer=${!!liveContainer} existingIframe=${!!existingIframe}`);
+
+  // If the container exists but the iframe is missing, Citadel has lazy-unloaded it because
+  // the block scrolled out of view (e.g. expandCitadelCodeBlocks moved the viewport).
+  // Scroll back into view and wait for React to re-mount the iframe.
+  if (liveContainer && !existingIframe) {
+    liveContainer.scrollIntoView({ behavior: 'instant', block: 'center' });
+    console.log(`[affine-clipper] captureMermaidBlock: scrolled into view, waiting for iframe…`);
+    for (let i = 0; i < 10 && !existingIframe; i++) {
+      await new Promise(r => setTimeout(r, 300));
+      existingIframe = liveContainer.querySelector<HTMLIFrameElement>('iframe');
+    }
+    console.log(`[affine-clipper] captureMermaidBlock: after scroll, existingIframe=${!!existingIframe}`);
+  }
+
   if (existingIframe) {
     console.log(`[affine-clipper] captureMermaidBlock: trying existing iframe src="${existingIframe.src.substring(0, 80)}"`);
-    const dataUri = await extractSvgFromIframe(existingIframe, 3000);
+    const dataUri = await extractSvgFromIframe(existingIframe, 5000);
     if (dataUri) {
       console.log(`[affine-clipper] captureMermaidBlock: captured from existing iframe`);
       return dataUri;

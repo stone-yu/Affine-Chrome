@@ -514,7 +514,11 @@ async function performExtraction(): Promise<ExtractResult | ExtractError> {
         const directId = container.getAttribute('data-attachment-id');
         if (directId) {
           container.setAttribute('data-affine-mermaid-id', directId);
-          console.log(`[affine-clipper] mermaid annotated (data-attachment-id): id=${directId}`);
+          // Scroll into view so Citadel mounts the iframe (it lazy-unmounts when off-screen).
+          // Without this, expandCitadelCodeBlocks may have scrolled the block out of view.
+          container.scrollIntoView({ behavior: 'instant', block: 'center' });
+          await new Promise(r => setTimeout(r, 600));
+          console.log(`[affine-clipper] mermaid annotated (data-attachment-id): id=${directId} iframe=${!!container.querySelector('iframe')}`);
           continue;
         }
         // Priority 2: existing iframe src already in DOM
