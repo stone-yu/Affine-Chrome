@@ -44,35 +44,73 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       }
 
       const codeBlocks: { lang: string; code: string }[] = [];
-      document.querySelectorAll('div.pk-code').forEach(el => {
+      const pkCodeEls = document.querySelectorAll('div.pk-code');
+      console.log(`[AFFiNE Clipper] pk-code elements found: ${pkCodeEls.length}`);
+
+      pkCodeEls.forEach((el, idx) => {
         // Strategy 1: CodeMirror API — most reliable, gives the FULL source including
         // lines not rendered in the DOM (CodeMirror v5 uses virtual scrolling).
         const cmEl = el.querySelector('.CodeMirror') as any;
-        if (cmEl?.CodeMirror) {
-          const code: string = cmEl.CodeMirror.getValue();
-          if (code) {
-            // Language: look for a Latin token in non-PRE children (e.g. "代码块SQL" → "SQL").
-            let lang = '';
-            for (const child of Array.from(el.children)) {
-              if ((child as HTMLElement).tagName === 'PRE') continue;
-              const tokens = ((child as HTMLElement).textContent ?? '').match(/[A-Za-z][A-Za-z0-9+#._-]*/g) ?? [];
-              for (const t of tokens) {
-                if (/^[A-Za-z][A-Za-z0-9+#._-]{0,18}$/.test(t) && new Set(t.toLowerCase()).size >= 2) {
-                  lang = t.toLowerCase(); break;
+        const cm = cmEl?.CodeMirror;
+        console.log(`[AFFiNE Clipper] pk-code[${idx}]: cmEl=${!!cmEl} cm=${!!cm}`);
+
+        if (cm) {
+          try {
+            // Force CodeMirror to refresh and recalculate its full content.
+            // This ensures getValue() returns all text even when the editor is collapsed.
+            try { cm.refresh(); } catch { /* ignore refresh errors */ }
+            const code: string = cm.getValue() ?? cm.doc?.getValue() ?? '';
+            console.log(`[AFFiNE Clipper] pk-code[${idx}]: getValue() len=${code.length}`);
+            if (code) {
+              // Language: look for a Latin token in non-PRE children (e.g. "代码块SQL" → "SQL").
+              let lang = '';
+              for (const child of Array.from(el.children)) {
+                if ((child as HTMLElement).tagName === 'PRE') continue;
+                const tokens = ((child as HTMLElement).textContent ?? '').match(/[A-Za-z][A-Za-z0-9+#._-]*/g) ?? [];
+                for (const t of tokens) {
+                  if (/^[A-Za-z][A-Za-z0-9+#._-]{0,18}$/.test(t) && new Set(t.toLowerCase()).size >= 2) {
+                    lang = t.toLowerCase(); break;
+                  }
                 }
+                if (lang) break;
               }
-              if (lang) break;
+              codeBlocks.push({ lang, code });
+              return;
             }
-            codeBlocks.push({ lang, code });
-            return;
+          } catch (e) {
+            console.warn(`[AFFiNE Clipper] pk-code[${idx}]: CodeMirror API error`, e);
           }
         }
+
+        // Strategy 1b: force-render all lines by expanding the scroll container,
+        // then read the full content from the CM doc directly.
+        if (cm) {
+          try {
+            const scroller = el.querySelector('.CodeMirror-scroll') as HTMLElement | null;
+            if (scroller) {
+              const origH = scroller.style.maxHeight;
+              scroller.style.maxHeight = '20000px';
+              cm.refresh();
+              const code: string = cm.getValue() ?? '';
+              scroller.style.maxHeight = origH;
+              console.log(`[AFFiNE Clipper] pk-code[${idx}]: after expand, code len=${code.length}`);
+              if (code) {
+                codeBlocks.push({ lang: '', code });
+                return;
+              }
+            }
+          } catch (e) {
+            console.warn(`[AFFiNE Clipper] pk-code[${idx}]: expand strategy error`, e);
+          }
+        }
+
         // Strategy 2: React fiber (fallback for non-CodeMirror code blocks).
         const node = getNode(el);
-        if (!node) return;
+        if (!node) { console.warn(`[AFFiNE Clipper] pk-code[${idx}]: no fiber node`); return; }
         const attrs = (node.attrs ?? {}) as Record<string, string>;
         const lang = (attrs.language ?? attrs.lang ?? attrs.params ?? '').toLowerCase();
         const code = getText(node);
+        console.log(`[AFFiNE Clipper] pk-code[${idx}]: fiber code len=${code.length}`);
         if (code) codeBlocks.push({ lang, code });
       });
 
