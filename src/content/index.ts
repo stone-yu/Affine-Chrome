@@ -497,7 +497,39 @@ async function performExtraction(): Promise<ExtractResult | ExtractError> {
       mainWorldData.mermaidBlocks.forEach((block, i) => {
         mermaidEls[i]?.setAttribute('data-affine-mermaid-id', block.attachmentId);
       });
-      console.log(`[affine-clipper] mermaid blocks annotated: ${mainWorldData.mermaidBlocks.length}`);
+      console.log(`[affine-clipper] mermaid blocks annotated (bg): ${mainWorldData.mermaidBlocks.length}`);
+    }
+
+    // DOM-based Mermaid discovery: scroll each ct-node-view-dom into view so Citadel
+    // mounts the lazy iframe, then read its src to extract the attachmentId.
+    // This is a fallback when the background script can't find the ProseMirror state.
+    if (hostname.includes('km.sankuai.com')) {
+      const mermaidContainers = Array.from(document.querySelectorAll<HTMLElement>(
+        'div.ct-node-view-dom[data-type]:not([data-type=""])',
+      )).filter(el => !el.getAttribute('data-affine-mermaid-id'));
+
+      if (mermaidContainers.length > 0) {
+        const originalScrollY = window.scrollY;
+        for (const container of mermaidContainers) {
+          // Scroll into view to trigger lazy iframe creation
+          container.scrollIntoView({ behavior: 'instant', block: 'center' });
+          await new Promise(r => setTimeout(r, 1000));
+
+          // Check if the Mermaid iframe has been created
+          const iframe = container.querySelector<HTMLIFrameElement>('iframe[src*="/block/mermaid/"]');
+          if (iframe?.src) {
+            const m = iframe.src.match(/\/block\/mermaid\/(\d+)/);
+            if (m) {
+              container.setAttribute('data-affine-mermaid-id', m[1]);
+              console.log(`[affine-clipper] mermaid annotated (DOM scroll): id=${m[1]}`);
+            }
+          } else {
+            console.warn(`[affine-clipper] mermaid: no iframe found after scroll, container class="${container.getAttribute('class')}"`);
+          }
+        }
+        // Restore scroll position
+        window.scrollTo({ top: originalScrollY, behavior: 'instant' });
+      }
     }
 
     const { modifiedClone, jobs } = findAndPrepare(document);
